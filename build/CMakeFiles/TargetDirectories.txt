@@ -1,3 +1,0 @@
-C:/Users/LichKing/Desktop/Capstone/TryingOutSDL/build/CMakeFiles/GameEngine.dir
-C:/Users/LichKing/Desktop/Capstone/TryingOutSDL/build/CMakeFiles/edit_cache.dir
-C:/Users/LichKing/Desktop/Capstone/TryingOutSDL/build/CMakeFiles/rebuild_cache.dir
