@@ -1,0 +1,4 @@
+
+gcc src/learn.c -o learn.exe -lSDL3
+
+./main.exe
