@@ -6,6 +6,7 @@
 
 #include "input.h"
 #include "player.h"
+#include "level.h"
 
 // Game object structure
 
@@ -18,6 +19,8 @@ typedef struct Game {
 
     Input input;
     Player player;
+
+    Level level;
 } Game;
 
 bool game_new(Game **game);

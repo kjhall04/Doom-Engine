@@ -2,17 +2,8 @@
 #define RENDERER_H
 
 #include "player.h"
+#include "level.h"
 #include <stdbool.h>
-
-typedef struct Wall {
-    float x1;
-    float z1;
-
-    float x2;
-    float z2;
-
-    float height;
-} Wall;
 
 bool renderer_project_point(
     Player *player,

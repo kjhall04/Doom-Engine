@@ -50,6 +50,7 @@ bool game_new(struct Game **game) {
     // Player initialized itself
     player_init(&g->player);
     input_init(&g->input);
+    level_init(&g->level);
 
     SDL_SetWindowRelativeMouseMode(g->window, true);
 
@@ -72,6 +73,8 @@ void game_free(struct Game **game) {
             SDL_DestroyWindow(g->window);
             g->window = NULL;
         }
+        
+        level_free(&g->level);
 
         SDL_Quit();
 
@@ -131,15 +134,9 @@ void game_draw(struct Game *game) {
         &height
     );
 
-    Wall wall = {
-        -2.0f,
-        -10.0f,
+    if (game->level.wall_count > 0) {
 
-        2.0f,
-        -10.0f,
-
-        3.0f
-    };
+    Wall *wall = &game->level.walls[0];
 
     float top_x1;
     float top_y1;
@@ -153,7 +150,7 @@ void game_draw(struct Game *game) {
 
     bool wall_visible = renderer_draw_wall(
         &game->player,
-        &wall,
+        wall,
         (float)width,
         (float)height,
         &top_x1,
@@ -168,45 +165,46 @@ void game_draw(struct Game *game) {
 
     if (wall_visible) {
 
-    SDL_SetRenderDrawColor(
-        game->renderer,
-        255,
-        255,
-        255,
-        255
-    );
+        SDL_SetRenderDrawColor(
+            game->renderer,
+            255,
+            255,
+            255,
+            255
+        );
 
-    SDL_RenderLine(
-        game->renderer,
-        top_x1,
-        top_y1,
-        top_x2,
-        top_y2
-    );
+        SDL_RenderLine(
+            game->renderer,
+            top_x1,
+            top_y1,
+            top_x2,
+            top_y2
+        );
 
-    SDL_RenderLine(
-        game->renderer,
-        bottom_x1,
-        bottom_y1,
-        bottom_x2,
-        bottom_y2
-    );
+        SDL_RenderLine(
+            game->renderer,
+            bottom_x1,
+            bottom_y1,
+            bottom_x2,
+            bottom_y2
+        );
 
-    SDL_RenderLine(
-        game->renderer,
-        top_x1,
-        top_y1,
-        bottom_x1,
-        bottom_y1
-    );
+        SDL_RenderLine(
+            game->renderer,
+            top_x1,
+            top_y1,
+            bottom_x1,
+            bottom_y1
+        );
 
-    SDL_RenderLine(
-        game->renderer,
-        top_x2,
-        top_y2,
-        bottom_x2,
-        bottom_y2
-    );
+        SDL_RenderLine(
+            game->renderer,
+            top_x2,
+            top_y2,
+            bottom_x2,
+            bottom_y2
+        );
+    }
 }
 
     SDL_RenderPresent(game->renderer);

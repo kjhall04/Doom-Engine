@@ -1,6 +1,8 @@
 #include "renderer.h"
+#include "level.h"
 
 #include <math.h>
+#include <stdio.h>
 
 #define FOV 90.0f
 
@@ -85,7 +87,7 @@ bool renderer_draw_wall(
     bool bottom1_visible = renderer_project_point(
         player,
         wall->x1,
-        0.0f,
+        wall->bottom_height,
         wall->z1,
         screen_width,
         screen_height,
@@ -96,7 +98,7 @@ bool renderer_draw_wall(
     bool bottom2_visible = renderer_project_point(
         player,
         wall->x2,
-        0.0f,
+        wall->bottom_height,
         wall->z2,
         screen_width,
         screen_height,
@@ -107,7 +109,7 @@ bool renderer_draw_wall(
     bool top1_visible = renderer_project_point(
         player,
         wall->x1,
-        wall->height,
+        wall->top_height,
         wall->z1,
         screen_width,
         screen_height,
@@ -118,7 +120,7 @@ bool renderer_draw_wall(
     bool top2_visible = renderer_project_point(
         player,
         wall->x2,
-        wall->height,
+        wall->top_height,
         wall->z2,
         screen_width,
         screen_height,

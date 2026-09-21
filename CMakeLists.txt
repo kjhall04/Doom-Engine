@@ -11,6 +11,7 @@ add_executable(GameEngine
     src/player.c
     src/input.c
     src/renderer.c
+    src/level.c
 )
 
 target_include_directories(GameEngine PRIVATE
