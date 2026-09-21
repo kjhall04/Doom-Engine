@@ -11,6 +11,9 @@ void input_init(Input *input) {
 
     input->mouse_delta_x = 0.0f;
     input->mouse_delta_y = 0.0f;
+
+    input->right_click = false;
+    input->left_click = false;
 }
 
 void input_process_event(Input *input, SDL_Event *event) {

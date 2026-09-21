@@ -14,6 +14,9 @@ typedef struct Input {
 
     float mouse_delta_x;
     float mouse_delta_y;
+
+    bool right_click;
+    bool left_click;
 } Input;
 
 void input_init(Input *input);

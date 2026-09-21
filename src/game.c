@@ -131,18 +131,34 @@ void game_draw(struct Game *game) {
         &height
     );
 
-    float screen_x;
-    float screen_y;
+    float x1;
+    float y1;
+    float x2;
+    float y2;
 
-    if (renderer_project_point(
-            &game->player,
-            0.0f,
-            1.6f,
-            -10.0f,
-            (float)width,
-            (float)height,
-            &screen_x,
-            &screen_y)) {
+    bool point1_visible = renderer_project_point(
+        &game->player,
+        -2.0f,
+        0.0f,
+        -10.0f,
+        (float)width,
+        (float)height,
+        &x1,
+        &y1
+    );
+
+    bool point2_visible = renderer_project_point(
+        &game->player,
+        2.0f,
+        0.0f,
+        -10.0f,
+        (float)width,
+        (float)height,
+        &x2,
+        &y2
+    );
+
+    if (point1_visible && point2_visible) {
 
         SDL_SetRenderDrawColor(
             game->renderer,
@@ -154,18 +170,10 @@ void game_draw(struct Game *game) {
 
         SDL_RenderLine(
             game->renderer,
-            screen_x - 10.0f,
-            screen_y,
-            screen_x + 10.0f,
-            screen_y
-        );
-
-        SDL_RenderLine(
-            game->renderer,
-            screen_x,
-            screen_y - 10.0f,
-            screen_x,
-            screen_y + 10.0f
+            x1,
+            y1,
+            x2,
+            y2
         );
     }
 
