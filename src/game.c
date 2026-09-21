@@ -131,51 +131,83 @@ void game_draw(struct Game *game) {
         &height
     );
 
-    float x1;
-    float y1;
-    float x2;
-    float y2;
-
-    bool point1_visible = renderer_project_point(
-        &game->player,
+    Wall wall = {
         -2.0f,
-        0.0f,
         -10.0f,
-        (float)width,
-        (float)height,
-        &x1,
-        &y1
-    );
 
-    bool point2_visible = renderer_project_point(
-        &game->player,
         2.0f,
-        0.0f,
         -10.0f,
+
+        3.0f
+    };
+
+    float top_x1;
+    float top_y1;
+    float top_x2;
+    float top_y2;
+
+    float bottom_x1;
+    float bottom_y1;
+    float bottom_x2;
+    float bottom_y2;
+
+    bool wall_visible = renderer_draw_wall(
+        &game->player,
+        &wall,
         (float)width,
         (float)height,
-        &x2,
-        &y2
+        &top_x1,
+        &top_y1,
+        &top_x2,
+        &top_y2,
+        &bottom_x1,
+        &bottom_y1,
+        &bottom_x2,
+        &bottom_y2
     );
 
-    if (point1_visible && point2_visible) {
+    if (wall_visible) {
 
-        SDL_SetRenderDrawColor(
-            game->renderer,
-            255,
-            255,
-            255,
-            255
-        );
+    SDL_SetRenderDrawColor(
+        game->renderer,
+        255,
+        255,
+        255,
+        255
+    );
 
-        SDL_RenderLine(
-            game->renderer,
-            x1,
-            y1,
-            x2,
-            y2
-        );
-    }
+    SDL_RenderLine(
+        game->renderer,
+        top_x1,
+        top_y1,
+        top_x2,
+        top_y2
+    );
+
+    SDL_RenderLine(
+        game->renderer,
+        bottom_x1,
+        bottom_y1,
+        bottom_x2,
+        bottom_y2
+    );
+
+    SDL_RenderLine(
+        game->renderer,
+        top_x1,
+        top_y1,
+        bottom_x1,
+        bottom_y1
+    );
+
+    SDL_RenderLine(
+        game->renderer,
+        top_x2,
+        top_y2,
+        bottom_x2,
+        bottom_y2
+    );
+}
 
     SDL_RenderPresent(game->renderer);
 }

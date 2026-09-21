@@ -66,3 +66,73 @@ bool renderer_project_point(
     
     return true;
 }
+
+bool renderer_draw_wall(
+    Player *player,
+    Wall *wall,
+    float screen_width,
+    float screen_height,
+    float *top_x1,
+    float *top_y1,
+    float *top_x2,
+    float *top_y2,
+    float *bottom_x1,
+    float *bottom_y1,
+    float *bottom_x2,
+    float *bottom_y2
+) {
+
+    bool bottom1_visible = renderer_project_point(
+        player,
+        wall->x1,
+        0.0f,
+        wall->z1,
+        screen_width,
+        screen_height,
+        bottom_x1,
+        bottom_y1
+    );
+
+    bool bottom2_visible = renderer_project_point(
+        player,
+        wall->x2,
+        0.0f,
+        wall->z2,
+        screen_width,
+        screen_height,
+        bottom_x2,
+        bottom_y2
+    );
+
+    bool top1_visible = renderer_project_point(
+        player,
+        wall->x1,
+        wall->height,
+        wall->z1,
+        screen_width,
+        screen_height,
+        top_x1,
+        top_y1
+    );
+
+    bool top2_visible = renderer_project_point(
+        player,
+        wall->x2,
+        wall->height,
+        wall->z2,
+        screen_width,
+        screen_height,
+        top_x2,
+        top_y2
+    );
+
+    if (!bottom1_visible ||
+        !bottom2_visible ||
+        !top1_visible ||
+        !top2_visible) {
+
+        return false;
+    }
+
+    return true;
+}

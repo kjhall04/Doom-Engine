@@ -4,6 +4,16 @@
 #include "player.h"
 #include <stdbool.h>
 
+typedef struct Wall {
+    float x1;
+    float z1;
+
+    float x2;
+    float z2;
+
+    float height;
+} Wall;
+
 bool renderer_project_point(
     Player *player,
     float world_x,
@@ -13,6 +23,21 @@ bool renderer_project_point(
     float screen_height,
     float *screen_x,
     float *screen_y
+);
+
+bool renderer_draw_wall(
+    Player *player,
+    Wall *wall,
+    float screen_width,
+    float screen_height,
+    float *top_x1,
+    float *top_y1,
+    float *top_x2,
+    float *top_y2,
+    float *bottom_x1,
+    float *bottom_y1,
+    float *bottom_x2,
+    float *bottom_y2
 );
 
 #endif
