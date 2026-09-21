@@ -81,4 +81,36 @@ void input_process_event(Input *input, SDL_Event *event) {
         input->mouse_delta_x += event->motion.xrel;
         input->mouse_delta_y += event->motion.yrel;
     }
+
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        switch (event->button.button) {
+        
+        case SDL_BUTTON_LEFT:
+            input->left_click = true;
+            break;
+
+        case SDL_BUTTON_RIGHT:
+            input->right_click = true;
+            break;
+        
+        default:
+            break;
+        }
+    }
+
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
+        switch (event->button.button) {
+        
+        case SDL_BUTTON_LEFT:
+            input->left_click = false;
+            break;
+
+        case SDL_BUTTON_RIGHT:
+            input->right_click = false;
+            break;
+        
+        default:
+            break;
+        }
+    }
 }
