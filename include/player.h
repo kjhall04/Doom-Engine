@@ -2,6 +2,7 @@
 #define PLAYER_H
 
 #include "input.h"
+#include "level.h"
 
 // Player object structure
 
@@ -31,6 +32,10 @@ typedef struct Player {
 } Player;
 
 void player_init(Player *player);
-void player_update(Player *player, Input *input, float delta_time);
+void player_update(
+    Player *player, 
+    Input *input, 
+    Level *level,
+    float delta_time);
 
 #endif

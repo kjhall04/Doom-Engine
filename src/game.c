@@ -109,12 +109,16 @@ void game_events(Game *game) {
 
 // Update data
 void game_update(Game *game, float delta_time) {
-    player_update(&game->player, &game->input, delta_time);
+    player_update(
+        &game->player, 
+        &game->input, 
+        &game->level, 
+        delta_time
+    );
 }
 
 // Draw the window
 void game_draw(struct Game *game) {
-
     SDL_SetRenderDrawColor(
         game->renderer,
         0,
@@ -134,78 +138,78 @@ void game_draw(struct Game *game) {
         &height
     );
 
-    if (game->level.wall_count > 0) {
+    for (int i = 0; i < game->level.wall_count; i++) {
 
-    Wall *wall = &game->level.walls[0];
+        Wall *wall = &game->level.walls[i];
 
-    float top_x1;
-    float top_y1;
-    float top_x2;
-    float top_y2;
+        float top_x1;
+        float top_y1;
+        float top_x2;
+        float top_y2;
 
-    float bottom_x1;
-    float bottom_y1;
-    float bottom_x2;
-    float bottom_y2;
+        float bottom_x1;
+        float bottom_y1;
+        float bottom_x2;
+        float bottom_y2;
 
-    bool wall_visible = renderer_draw_wall(
-        &game->player,
-        wall,
-        (float)width,
-        (float)height,
-        &top_x1,
-        &top_y1,
-        &top_x2,
-        &top_y2,
-        &bottom_x1,
-        &bottom_y1,
-        &bottom_x2,
-        &bottom_y2
-    );
-
-    if (wall_visible) {
-
-        SDL_SetRenderDrawColor(
-            game->renderer,
-            255,
-            255,
-            255,
-            255
+        bool wall_visible = renderer_draw_wall(
+            &game->player,
+            wall,
+            (float)width,
+            (float)height,
+            &top_x1,
+            &top_y1,
+            &top_x2,
+            &top_y2,
+            &bottom_x1,
+            &bottom_y1,
+            &bottom_x2,
+            &bottom_y2
         );
 
-        SDL_RenderLine(
-            game->renderer,
-            top_x1,
-            top_y1,
-            top_x2,
-            top_y2
-        );
+        if (wall_visible) {
 
-        SDL_RenderLine(
-            game->renderer,
-            bottom_x1,
-            bottom_y1,
-            bottom_x2,
-            bottom_y2
-        );
+            SDL_SetRenderDrawColor(
+                game->renderer,
+                255,
+                255,
+                255,
+                255
+            );
 
-        SDL_RenderLine(
-            game->renderer,
-            top_x1,
-            top_y1,
-            bottom_x1,
-            bottom_y1
-        );
+            SDL_RenderLine(
+                game->renderer,
+                top_x1,
+                top_y1,
+                top_x2,
+                top_y2
+            );
 
-        SDL_RenderLine(
-            game->renderer,
-            top_x2,
-            top_y2,
-            bottom_x2,
-            bottom_y2
-        );
+            SDL_RenderLine(
+                game->renderer,
+                bottom_x1,
+                bottom_y1,
+                bottom_x2,
+                bottom_y2
+            );
+
+            SDL_RenderLine(
+                game->renderer,
+                top_x1,
+                top_y1,
+                bottom_x1,
+                bottom_y1
+            );
+
+            SDL_RenderLine(
+                game->renderer,
+                top_x2,
+                top_y2,
+                bottom_x2,
+                bottom_y2
+            );
+        }
     }
-}
 
     SDL_RenderPresent(game->renderer);
 }
