@@ -3,7 +3,20 @@
 
 #include "player.h"
 #include "level.h"
+
 #include <stdbool.h>
+
+typedef struct ScreenPoint {
+    float x;
+    float y;
+} ScreenPoint;
+
+typedef struct ScreenLine {
+    ScreenPoint start;
+    ScreenPoint end;
+} ScreenLine;
+
+#define MAX_WALL_LINES 4
 
 bool renderer_project_point(
     Player *player,
@@ -16,19 +29,12 @@ bool renderer_project_point(
     float *screen_y
 );
 
-bool renderer_draw_wall(
+int renderer_draw_wall(
     Player *player,
     Wall *wall,
     float screen_width,
     float screen_height,
-    float *top_x1,
-    float *top_y1,
-    float *top_x2,
-    float *top_y2,
-    float *bottom_x1,
-    float *bottom_y1,
-    float *bottom_x2,
-    float *bottom_y2
+    ScreenLine lines[MAX_WALL_LINES]
 );
 
 #endif

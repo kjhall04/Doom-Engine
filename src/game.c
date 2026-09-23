@@ -142,32 +142,17 @@ void game_draw(struct Game *game) {
 
         Wall *wall = &game->level.walls[i];
 
-        float top_x1;
-        float top_y1;
-        float top_x2;
-        float top_y2;
+        ScreenLine lines[MAX_WALL_LINES];
 
-        float bottom_x1;
-        float bottom_y1;
-        float bottom_x2;
-        float bottom_y2;
-
-        bool wall_visible = renderer_draw_wall(
+        int line_count = renderer_draw_wall(
             &game->player,
             wall,
             (float)width,
             (float)height,
-            &top_x1,
-            &top_y1,
-            &top_x2,
-            &top_y2,
-            &bottom_x1,
-            &bottom_y1,
-            &bottom_x2,
-            &bottom_y2
+            lines
         );
 
-        if (wall_visible) {
+        if (line_count > 0) {
 
             SDL_SetRenderDrawColor(
                 game->renderer,
@@ -177,37 +162,16 @@ void game_draw(struct Game *game) {
                 255
             );
 
-            SDL_RenderLine(
-                game->renderer,
-                top_x1,
-                top_y1,
-                top_x2,
-                top_y2
-            );
+            for (int line = 0; line < line_count; line++) {
 
-            SDL_RenderLine(
-                game->renderer,
-                bottom_x1,
-                bottom_y1,
-                bottom_x2,
-                bottom_y2
-            );
-
-            SDL_RenderLine(
-                game->renderer,
-                top_x1,
-                top_y1,
-                bottom_x1,
-                bottom_y1
-            );
-
-            SDL_RenderLine(
-                game->renderer,
-                top_x2,
-                top_y2,
-                bottom_x2,
-                bottom_y2
-            );
+                SDL_RenderLine(
+                    game->renderer,
+                    lines[line].start.x,
+                    lines[line].start.y,
+                    lines[line].end.x,
+                    lines[line].end.y
+                );
+            }
         }
     }
 
