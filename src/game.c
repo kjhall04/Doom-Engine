@@ -3,12 +3,39 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <SDL3/SDL.h>
 
 #define SDL_FLAGS SDL_INIT_VIDEO
 
 #define WINDOW_TITLE "Doom Engine"
 #define WINDOW_WIDTH 1920
 #define WINDOW_HEIGHT 1080
+
+typedef struct RenderWall {
+    ScreenWall screen_wall;
+    float distance;
+} RenderWall;
+
+static float game_wall_distance(
+    Player *player,
+    Wall *wall
+) {
+    float center_x =
+        (wall->x1 + wall->x2) * 0.5f;
+
+    float center_z =
+        (wall->z1 + wall->z2) * 0.5f;
+
+    float difference_x =
+        center_x - player->x;
+
+    float difference_z =
+        center_z - player->z;
+
+    return
+        difference_x * difference_x +
+        difference_z * difference_z;
+}
 
 static bool game_init_sdl(Game *game);
 
@@ -140,39 +167,212 @@ void game_draw(struct Game *game) {
 
     for (int i = 0; i < game->level.wall_count; i++) {
 
-        Wall *wall = &game->level.walls[i];
+        RenderWall *render_walls =
+            malloc(
+                sizeof(RenderWall) *
+                game->level.wall_count
+            );
 
-        ScreenLine lines[MAX_WALL_LINES];
+        if (render_walls == NULL) {
+            SDL_RenderPresent(game->renderer);
+            return;
+        }
 
-        int line_count = renderer_draw_wall(
-            &game->player,
-            wall,
-            (float)width,
-            (float)height,
-            lines
-        );
 
-        if (line_count > 0) {
+        int render_wall_count = 0;
 
+
+        /*
+        * Project every visible wall.
+        */
+        for (int i = 0;
+            i < game->level.wall_count;
+            i++) {
+
+            Wall *wall =
+                &game->level.walls[i];
+
+            ScreenWall screen_wall;
+
+            bool wall_visible =
+                renderer_draw_wall(
+                    &game->player,
+                    wall,
+                    (float)width,
+                    (float)height,
+                    &screen_wall
+                );
+
+            if (!wall_visible) {
+                continue;
+            }
+
+
+            RenderWall *render_wall =
+                &render_walls[render_wall_count];
+
+            render_wall->screen_wall =
+                screen_wall;
+
+            render_wall->distance =
+                game_wall_distance(
+                    &game->player,
+                    wall
+                );
+
+            render_wall_count++;
+        }
+
+
+        /*
+        * Sort from farthest to nearest.
+        */
+        for (int i = 0;
+            i < render_wall_count - 1;
+            i++) {
+
+            for (int j = i + 1;
+                j < render_wall_count;
+                j++) {
+
+                if (
+                    render_walls[j].distance >
+                    render_walls[i].distance
+                ) {
+
+                    RenderWall temporary =
+                        render_walls[i];
+
+                    render_walls[i] =
+                        render_walls[j];
+
+                    render_walls[j] =
+                        temporary;
+                }
+            }
+        }
+
+
+        /*
+        * Draw the walls.
+        */
+        for (int i = 0;
+            i < render_wall_count;
+            i++) {
+
+            ScreenWall *screen_wall =
+                &render_walls[i].screen_wall;
+
+            SDL_Vertex vertices[4];
+
+            vertices[0].position.x =
+                screen_wall->top_left.x;
+
+            vertices[0].position.y =
+                screen_wall->top_left.y;
+
+            vertices[0].color.r = 255;
+            vertices[0].color.g = 255;
+            vertices[0].color.b = 255;
+            vertices[0].color.a = 255;
+
+
+            vertices[1].position.x =
+                screen_wall->top_right.x;
+
+            vertices[1].position.y =
+                screen_wall->top_right.y;
+
+            vertices[1].color.r = 255;
+            vertices[1].color.g = 255;
+            vertices[1].color.b = 255;
+            vertices[1].color.a = 255;
+
+
+            vertices[2].position.x =
+                screen_wall->bottom_right.x;
+
+            vertices[2].position.y =
+                screen_wall->bottom_right.y;
+
+            vertices[2].color.r = 255;
+            vertices[2].color.g = 255;
+            vertices[2].color.b = 255;
+            vertices[2].color.a = 255;
+
+
+            vertices[3].position.x =
+                screen_wall->bottom_left.x;
+
+            vertices[3].position.y =
+                screen_wall->bottom_left.y;
+
+            vertices[3].color.r = 255;
+            vertices[3].color.g = 255;
+            vertices[3].color.b = 255;
+            vertices[3].color.a = 255;
+
+
+            int indices[6] = {
+                0, 1, 2,
+                0, 2, 3
+            };
+
+
+            SDL_RenderGeometry(
+                game->renderer,
+                NULL,
+                vertices,
+                4,
+                indices,
+                6
+            );
+
+            /*
+            * Draw the wall outline in blue.
+            */
             SDL_SetRenderDrawColor(
                 game->renderer,
-                255,
-                255,
-                255,
+                0,
+                0,
+                0,
                 255
             );
 
-            for (int line = 0; line < line_count; line++) {
+            SDL_RenderLine(
+                game->renderer,
+                screen_wall->top_left.x,
+                screen_wall->top_left.y,
+                screen_wall->top_right.x,
+                screen_wall->top_right.y
+            );
 
-                SDL_RenderLine(
-                    game->renderer,
-                    lines[line].start.x,
-                    lines[line].start.y,
-                    lines[line].end.x,
-                    lines[line].end.y
-                );
-            }
+            SDL_RenderLine(
+                game->renderer,
+                screen_wall->bottom_left.x,
+                screen_wall->bottom_left.y,
+                screen_wall->bottom_right.x,
+                screen_wall->bottom_right.y
+            );
+
+            SDL_RenderLine(
+                game->renderer,
+                screen_wall->top_left.x,
+                screen_wall->top_left.y,
+                screen_wall->bottom_left.x,
+                screen_wall->bottom_left.y
+            );
+
+            SDL_RenderLine(
+                game->renderer,
+                screen_wall->top_right.x,
+                screen_wall->top_right.y,
+                screen_wall->bottom_right.x,
+                screen_wall->bottom_right.y
+            );
         }
+
+        free(render_walls);
     }
 
     SDL_RenderPresent(game->renderer);

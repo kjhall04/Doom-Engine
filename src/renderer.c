@@ -14,15 +14,6 @@ typedef struct CameraPoint {
 } CameraPoint;
 
 
-/*
- * Convert a world position into camera space.
- *
- * Camera space:
- *
- * x = left/right
- * y = up/down
- * z = forward/backward
- */
 static CameraPoint renderer_world_to_camera(
     Player *player,
     float world_x,
@@ -40,9 +31,6 @@ static CameraPoint renderer_world_to_camera(
         world_z - player->z;
 
 
-    /*
-     * Apply yaw.
-     */
     float sin_yaw =
         sinf(player->yaw);
 
@@ -58,9 +46,6 @@ static CameraPoint renderer_world_to_camera(
         z * cos_yaw;
 
 
-    /*
-     * Apply pitch.
-     */
     float sin_pitch =
         sinf(player->pitch);
 
@@ -86,92 +71,16 @@ static CameraPoint renderer_world_to_camera(
 }
 
 
-/*
- * Clip a line segment against one plane.
- *
- * The plane equation is:
- *
- *     a*x + b*y + c*z >= 0
- *
- * If both points are outside the plane,
- * the entire line is invisible.
- *
- * If one point is outside, that point is
- * moved to the intersection with the plane.
- */
-static bool renderer_clip_line_against_plane(
-    CameraPoint *start,
-    CameraPoint *end,
-    float a,
-    float b,
-    float c
+static bool renderer_point_in_frustum(
+    CameraPoint *point,
+    float screen_width,
+    float screen_height
 ) {
-    float start_distance =
-        a * start->x +
-        b * start->y +
-        c * start->z;
-
-    float end_distance =
-        a * end->x +
-        b * end->y +
-        c * end->z;
-
-
-    /*
-     * Both points are outside.
-     */
-    if (start_distance < 0.0f &&
-        end_distance < 0.0f) {
-
+    if (point->z <= NEAR_PLANE) {
         return false;
     }
 
 
-    /*
-     * One point is outside.
-     */
-    if (start_distance < 0.0f ||
-        end_distance < 0.0f) {
-
-        float t =
-            start_distance /
-            (start_distance - end_distance);
-
-        CameraPoint intersection;
-
-        intersection.x =
-            start->x +
-            (end->x - start->x) * t;
-
-        intersection.y =
-            start->y +
-            (end->y - start->y) * t;
-
-        intersection.z =
-            start->z +
-            (end->z - start->z) * t;
-
-
-        if (start_distance < 0.0f) {
-            *start = intersection;
-        } else {
-            *end = intersection;
-        }
-    }
-
-    return true;
-}
-
-
-/*
- * Clip a line against the camera frustum.
- */
-static bool renderer_clip_line(
-    CameraPoint *start,
-    CameraPoint *end,
-    float screen_width,
-    float screen_height
-) {
     float half_fov =
         (FOV * 0.5f) *
         (PI / 180.0f);
@@ -180,11 +89,6 @@ static bool renderer_clip_line(
         tanf(half_fov);
 
 
-    /*
-     * Calculate the vertical field of view
-     * from the horizontal field of view and
-     * the screen aspect ratio.
-     */
     float focal_length =
         (screen_width * 0.5f) /
         horizontal_tangent;
@@ -195,91 +99,57 @@ static bool renderer_clip_line(
 
 
     /*
-     * Near plane
-     *
-     * z >= NEAR_PLANE
+     * Left
      */
-    if (!renderer_clip_line_against_plane(
-        start,
-        end,
-        0.0f,
-        0.0f,
-        1.0f
-    )) {
+    if (
+        point->x +
+        point->z * horizontal_tangent
+        < 0.0f
+    ) {
         return false;
     }
 
 
     /*
-     * Left side of the view.
-     *
-     * x + z * tan(FOV / 2) >= 0
+     * Right
      */
-    if (!renderer_clip_line_against_plane(
-        start,
-        end,
-        1.0f,
-        0.0f,
-        horizontal_tangent
-    )) {
+    if (
+        -point->x +
+        point->z * horizontal_tangent
+        < 0.0f
+    ) {
         return false;
     }
 
 
     /*
-     * Right side of the view.
-     *
-     * -x + z * tan(FOV / 2) >= 0
+     * Top
      */
-    if (!renderer_clip_line_against_plane(
-        start,
-        end,
-        -1.0f,
-        0.0f,
-        horizontal_tangent
-    )) {
+    if (
+        -point->y +
+        point->z * vertical_tangent
+        < 0.0f
+    ) {
         return false;
     }
 
 
     /*
-     * Top of the view.
-     *
-     * -y + z * vertical_tangent >= 0
+     * Bottom
      */
-    if (!renderer_clip_line_against_plane(
-        start,
-        end,
-        0.0f,
-        -1.0f,
-        vertical_tangent
-    )) {
+    if (
+        point->y +
+        point->z * vertical_tangent
+        < 0.0f
+    ) {
         return false;
     }
 
-
-    /*
-     * Bottom of the view.
-     *
-     * y + z * vertical_tangent >= 0
-     */
-    if (!renderer_clip_line_against_plane(
-        start,
-        end,
-        0.0f,
-        1.0f,
-        vertical_tangent
-    )) {
-        return false;
-    }
 
     return true;
 }
 
 
-/*
- * Convert a camera space point into screen coordinates.
- */
 static bool renderer_project_camera_point(
     CameraPoint *point,
     float screen_width,
@@ -289,6 +159,7 @@ static bool renderer_project_camera_point(
     if (point->z <= 0.0f) {
         return false;
     }
+
 
     float half_fov =
         (FOV * 0.5f) *
@@ -309,17 +180,11 @@ static bool renderer_project_camera_point(
          point->z) +
         (screen_height * 0.5f);
 
+
     return true;
 }
 
 
-/*
- * Project a world position directly to the screen.
- *
- * This function is kept as a general utility
- * even though wall rendering now uses the
- * clipped camera points directly.
- */
 bool renderer_project_point(
     Player *player,
     float world_x,
@@ -359,32 +224,14 @@ bool renderer_project_point(
 }
 
 
-/*
- * Draw a wall.
- *
- * A wall has four edges:
- *
- *     top
- *     bottom
- *     left
- *     right
- *
- * Each edge is clipped independently.
- */
-int renderer_draw_wall(
+bool renderer_draw_wall(
     Player *player,
     Wall *wall,
     float screen_width,
     float screen_height,
-    ScreenLine lines[MAX_WALL_LINES]
+    ScreenWall *screen_wall
 ) {
-    CameraPoint points[4];
-
-
-    /*
-     * Bottom left
-     */
-    points[0] =
+    CameraPoint bottom_left =
         renderer_world_to_camera(
             player,
             wall->x1,
@@ -393,10 +240,7 @@ int renderer_draw_wall(
         );
 
 
-    /*
-     * Bottom right
-     */
-    points[1] =
+    CameraPoint bottom_right =
         renderer_world_to_camera(
             player,
             wall->x2,
@@ -405,10 +249,7 @@ int renderer_draw_wall(
         );
 
 
-    /*
-     * Top right
-     */
-    points[2] =
+    CameraPoint top_right =
         renderer_world_to_camera(
             player,
             wall->x2,
@@ -417,10 +258,7 @@ int renderer_draw_wall(
         );
 
 
-    /*
-     * Top left
-     */
-    points[3] =
+    CameraPoint top_left =
         renderer_world_to_camera(
             player,
             wall->x1,
@@ -429,85 +267,83 @@ int renderer_draw_wall(
         );
 
 
-    int line_count = 0;
-
-
     /*
-     * Process all four wall edges.
+     * For this first solid wall test,
+     * require all four corners to be
+     * inside the camera.
      */
-    for (int i = 0; i < 4; i++) {
+    if (!renderer_point_in_frustum(
+        &bottom_left,
+        screen_width,
+        screen_height
+    )) {
+        return false;
+    }
 
-        int next =
-            (i + 1) % 4;
+    if (!renderer_point_in_frustum(
+        &bottom_right,
+        screen_width,
+        screen_height
+    )) {
+        return false;
+    }
 
+    if (!renderer_point_in_frustum(
+        &top_right,
+        screen_width,
+        screen_height
+    )) {
+        return false;
+    }
 
-        CameraPoint start =
-            points[i];
-
-        CameraPoint end =
-            points[next];
-
-
-        /*
-         * Clip this edge against the
-         * camera frustum.
-         */
-        if (!renderer_clip_line(
-            &start,
-            &end,
-            screen_width,
-            screen_height
-        )) {
-            continue;
-        }
-
-
-        /*
-         * Project the clipped points.
-         */
-        ScreenPoint screen_start;
-        ScreenPoint screen_end;
-
-        if (!renderer_project_camera_point(
-            &start,
-            screen_width,
-            screen_height,
-            &screen_start
-        )) {
-            continue;
-        }
-
-        if (!renderer_project_camera_point(
-            &end,
-            screen_width,
-            screen_height,
-            &screen_end
-        )) {
-            continue;
-        }
-
-
-        /*
-         * Store the line.
-         */
-        lines[line_count].start =
-            screen_start;
-
-        lines[line_count].end =
-            screen_end;
-
-        line_count++;
-
-
-        /*
-         * A wall can have at most four
-         * visible edges.
-         */
-        if (line_count >= MAX_WALL_LINES) {
-            break;
-        }
+    if (!renderer_point_in_frustum(
+        &top_left,
+        screen_width,
+        screen_height
+    )) {
+        return false;
     }
 
 
-    return line_count;
+    /*
+     * Project all four corners.
+     */
+    if (!renderer_project_camera_point(
+        &top_left,
+        screen_width,
+        screen_height,
+        &screen_wall->top_left
+    )) {
+        return false;
+    }
+
+    if (!renderer_project_camera_point(
+        &top_right,
+        screen_width,
+        screen_height,
+        &screen_wall->top_right
+    )) {
+        return false;
+    }
+
+    if (!renderer_project_camera_point(
+        &bottom_left,
+        screen_width,
+        screen_height,
+        &screen_wall->bottom_left
+    )) {
+        return false;
+    }
+
+    if (!renderer_project_camera_point(
+        &bottom_right,
+        screen_width,
+        screen_height,
+        &screen_wall->bottom_right
+    )) {
+        return false;
+    }
+
+
+    return true;
 }

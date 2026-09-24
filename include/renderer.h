@@ -11,10 +11,13 @@ typedef struct ScreenPoint {
     float y;
 } ScreenPoint;
 
-typedef struct ScreenLine {
-    ScreenPoint start;
-    ScreenPoint end;
-} ScreenLine;
+typedef struct ScreenWall {
+    ScreenPoint top_left;
+    ScreenPoint top_right;
+
+    ScreenPoint bottom_left;
+    ScreenPoint bottom_right;
+} ScreenWall;
 
 #define MAX_WALL_LINES 4
 
@@ -29,12 +32,12 @@ bool renderer_project_point(
     float *screen_y
 );
 
-int renderer_draw_wall(
+bool renderer_draw_wall(
     Player *player,
     Wall *wall,
     float screen_width,
     float screen_height,
-    ScreenLine lines[MAX_WALL_LINES]
+    ScreenWall *screen_wall
 );
 
 #endif
