@@ -28,10 +28,17 @@ void player_init(Player *player) {
 
 static bool player_resolve_wall_collision(
     Player *player,
+    Level *level,
     Wall *wall
 ) {
-    float wall_x = wall->x2 - wall->x1;
-    float wall_z = wall->z2 - wall->z1;
+    Vertex *vertex_start =
+        &level->vertices[wall->vertex_start];
+
+    Vertex *vertex_end =
+        &level->vertices[wall->vertex_end];
+
+    float wall_x = vertex_end->x - vertex_start->x;
+    float wall_z = vertex_end->z - vertex_start->z;
 
     float length_squared =
         wall_x * wall_x +
@@ -42,10 +49,10 @@ static bool player_resolve_wall_collision(
     }
 
     float player_to_wall_x =
-        player->x - wall->x1;
+        player->x - vertex_start->x;
 
     float player_to_wall_z =
-        player->z - wall->z1;
+        player->z - vertex_start->z;
 
     float t =
         (player_to_wall_x * wall_x +
@@ -61,10 +68,10 @@ static bool player_resolve_wall_collision(
     }
 
     float closest_x =
-        wall->x1 + wall_x * t;
+        vertex_start->x + wall_x * t;
 
     float closest_z =
-        wall->z1 + wall_z * t;
+        vertex_start->z + wall_z * t;
 
     float difference_x =
         player->x - closest_x;
@@ -247,13 +254,22 @@ void player_update(
     // Check whether the player is touching a wall
     for (int i = 0; i < level->wall_count; i++) {
 
+        Wall *wall;
+            &level->walls[i];
+
+        Vertex *vertex_start =
+            &level->vertices[wall->vertex_start];
+
+        Vertex *vertex_end =
+            &level->vertices[wall->vertex_end];
+
         float wall_x =
-            level->walls[i].x2 -
-            level->walls[i].x1;
+            vertex_end->x -
+            vertex_start->x;
 
         float wall_z =
-            level->walls[i].z2 -
-            level->walls[i].z1;
+            vertex_end->z -
+            vertex_start->z;
 
         float length_squared =
             wall_x * wall_x +
@@ -265,11 +281,11 @@ void player_update(
 
         float player_to_wall_x =
             player->x -
-            level->walls[i].x1;
+            vertex_start->x;
 
         float player_to_wall_z =
             player->z -
-            level->walls[i].z1;
+            vertex_start->z;
 
         float t =
             (player_to_wall_x * wall_x +
@@ -285,11 +301,11 @@ void player_update(
         }
 
         float closest_x =
-            level->walls[i].x1 +
+            vertex_start->x +
             wall_x * t;
 
         float closest_z =
-            level->walls[i].z1 +
+            vertex_start->z +
             wall_z * t;
 
         float difference_x =
@@ -363,6 +379,7 @@ void player_update(
 
             if (player_resolve_wall_collision(
                 player,
+                level,
                 &level->walls[i]
             )) {
                 collision_found = true;

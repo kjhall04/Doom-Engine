@@ -18,13 +18,20 @@ typedef struct RenderWall {
 
 static float game_wall_distance(
     Player *player,
+    Level *level,
     Wall *wall
 ) {
+    Vertex *vertex_start =
+        &level->vertices[wall->vertex_start];
+
+    Vertex *vertex_end =
+        &level->vertices[wall->vertex_end];
+
     float center_x =
-        (wall->x1 + wall->x2) * 0.5f;
+        (vertex_start->x + vertex_end->x) * 0.5f;
 
     float center_z =
-        (wall->z1 + wall->z2) * 0.5f;
+        (vertex_start->z + vertex_end->z) * 0.5f;
 
     float difference_x =
         center_x - player->x;
@@ -197,6 +204,7 @@ void game_draw(struct Game *game) {
             bool wall_visible =
                 renderer_draw_wall(
                     &game->player,
+                    &game->level,
                     wall,
                     (float)width,
                     (float)height,
@@ -217,6 +225,7 @@ void game_draw(struct Game *game) {
             render_wall->distance =
                 game_wall_distance(
                     &game->player,
+                    &game->level,
                     wall
                 );
 

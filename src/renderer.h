@@ -33,6 +33,7 @@ bool renderer_project_point(
 
 bool renderer_draw_wall(
     Player *player,
+    Level *level,
     Wall *wall,
     float screen_width,
     float screen_height,

@@ -535,6 +535,7 @@ bool renderer_project_point(
  */
 bool renderer_draw_wall(
     Player *player,
+    Level *level,
     Wall *wall,
     float screen_width,
     float screen_height,
@@ -542,6 +543,11 @@ bool renderer_draw_wall(
 ) {
     CameraPoint wall_points[4];
 
+    Vertex *vertex_start =
+        &level->vertices[wall->vertex_start];
+
+    Vertex *vertex_end =
+        &level->vertices[wall->vertex_end];
 
     /*
      * Bottom left
@@ -549,9 +555,9 @@ bool renderer_draw_wall(
     wall_points[0] =
         renderer_world_to_camera(
             player,
-            wall->x1,
+            vertex_start->x,
             wall->bottom_height,
-            wall->z1
+            vertex_start->z
         );
 
 
@@ -561,9 +567,9 @@ bool renderer_draw_wall(
     wall_points[1] =
         renderer_world_to_camera(
             player,
-            wall->x2,
+            vertex_end->x,
             wall->bottom_height,
-            wall->z2
+            vertex_end->z
         );
 
 
@@ -573,9 +579,9 @@ bool renderer_draw_wall(
     wall_points[2] =
         renderer_world_to_camera(
             player,
-            wall->x2,
+            vertex_end->x,
             wall->top_height,
-            wall->z2
+            vertex_end->z
         );
 
 
@@ -585,9 +591,9 @@ bool renderer_draw_wall(
     wall_points[3] =
         renderer_world_to_camera(
             player,
-            wall->x1,
+            vertex_start->x,
             wall->top_height,
-            wall->z1
+            vertex_start->z
         );
 
 
