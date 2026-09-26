@@ -45,6 +45,17 @@ void level_init(Level *level) {
         0.0f,
         3.0f
     };
+
+    level->sector_count = 1;
+
+    level->sectors = malloc(
+        sizeof(Sector) * level->sector_count
+    );
+
+    level->sectors[0] = (Sector){
+        0.0,
+        3.0f
+    };
 }
 
 void level_free(Level *level) {
@@ -58,4 +69,9 @@ void level_free(Level *level) {
 
     level->walls = NULL;
     level->wall_count = 0;
+
+    free(level->sectors);
+
+    level->sectors = NULL;
+    level->sector_count = 0;
 }
