@@ -12,7 +12,7 @@
 #define WINDOW_HEIGHT 1080
 
 typedef struct RenderWall {
-    ScreenWall screen_wall;
+    ScreenPolygon screen_wall;
     float distance;
 } RenderWall;
 
@@ -192,7 +192,7 @@ void game_draw(struct Game *game) {
             Wall *wall =
                 &game->level.walls[i];
 
-            ScreenWall screen_wall;
+            ScreenPolygon screen_wall;
 
             bool wall_visible =
                 renderer_draw_wall(
@@ -260,118 +260,105 @@ void game_draw(struct Game *game) {
             i < render_wall_count;
             i++) {
 
-            ScreenWall *screen_wall =
+            ScreenPolygon *screen_wall =
                 &render_walls[i].screen_wall;
 
-            SDL_Vertex vertices[4];
 
-            vertices[0].position.x =
-                screen_wall->top_left.x;
-
-            vertices[0].position.y =
-                screen_wall->top_left.y;
-
-            vertices[0].color.r = 255;
-            vertices[0].color.g = 255;
-            vertices[0].color.b = 255;
-            vertices[0].color.a = 255;
+            /*
+            * Create one SDL vertex for every
+            * point in the clipped wall.
+            */
+            SDL_Vertex vertices[
+                MAX_SCREEN_WALL_POINTS
+            ];
 
 
-            vertices[1].position.x =
-                screen_wall->top_right.x;
+            for (int point_index = 0;
+                point_index < screen_wall->point_count;
+                point_index++) {
 
-            vertices[1].position.y =
-                screen_wall->top_right.y;
+                vertices[point_index].position.x =
+                    screen_wall->points[point_index].x;
 
-            vertices[1].color.r = 255;
-            vertices[1].color.g = 255;
-            vertices[1].color.b = 255;
-            vertices[1].color.a = 255;
+                vertices[point_index].position.y =
+                    screen_wall->points[point_index].y;
 
+                vertices[point_index].color.r = 255;
+                vertices[point_index].color.g = 255;
+                vertices[point_index].color.b = 255;
+                vertices[point_index].color.a = 255;
 
-            vertices[2].position.x =
-                screen_wall->bottom_right.x;
-
-            vertices[2].position.y =
-                screen_wall->bottom_right.y;
-
-            vertices[2].color.r = 255;
-            vertices[2].color.g = 255;
-            vertices[2].color.b = 255;
-            vertices[2].color.a = 255;
+                vertices[point_index].tex_coord.x = 0.0f;
+                vertices[point_index].tex_coord.y = 0.0f;
+            }
 
 
-            vertices[3].position.x =
-                screen_wall->bottom_left.x;
+            /*
+            * A polygon with N points can be
+            * represented as N minus 2 triangles.
+            *
+            * We use a triangle fan.
+            */
+            int indices[
+                (MAX_SCREEN_WALL_POINTS - 2) * 3
+            ];
 
-            vertices[3].position.y =
-                screen_wall->bottom_left.y;
 
-            vertices[3].color.r = 255;
-            vertices[3].color.g = 255;
-            vertices[3].color.b = 255;
-            vertices[3].color.a = 255;
+            int index_count = 0;
 
 
-            int indices[6] = {
-                0, 1, 2,
-                0, 2, 3
-            };
+            for (int triangle = 1;
+                triangle < screen_wall->point_count - 1;
+                triangle++) {
+
+                indices[index_count++] = 0;
+                indices[index_count++] = triangle;
+                indices[index_count++] = triangle + 1;
+            }
 
 
             SDL_RenderGeometry(
                 game->renderer,
                 NULL,
                 vertices,
-                4,
+                screen_wall->point_count,
                 indices,
-                6
+                index_count
             );
 
+
             /*
-            * Draw the wall outline in blue.
+            * Draw the blue outline.
             */
             SDL_SetRenderDrawColor(
                 game->renderer,
                 0,
-                0,
-                0,
+                100,
+                255,
                 255
             );
 
-            SDL_RenderLine(
-                game->renderer,
-                screen_wall->top_left.x,
-                screen_wall->top_left.y,
-                screen_wall->top_right.x,
-                screen_wall->top_right.y
-            );
 
-            SDL_RenderLine(
-                game->renderer,
-                screen_wall->bottom_left.x,
-                screen_wall->bottom_left.y,
-                screen_wall->bottom_right.x,
-                screen_wall->bottom_right.y
-            );
+            for (int point_index = 0;
+                point_index < screen_wall->point_count;
+                point_index++) {
 
-            SDL_RenderLine(
-                game->renderer,
-                screen_wall->top_left.x,
-                screen_wall->top_left.y,
-                screen_wall->bottom_left.x,
-                screen_wall->bottom_left.y
-            );
+                int next_index =
+                    (point_index + 1) %
+                    screen_wall->point_count;
 
-            SDL_RenderLine(
-                game->renderer,
-                screen_wall->top_right.x,
-                screen_wall->top_right.y,
-                screen_wall->bottom_right.x,
-                screen_wall->bottom_right.y
-            );
+
+                SDL_RenderLine(
+                    game->renderer,
+
+                    screen_wall->points[point_index].x,
+                    screen_wall->points[point_index].y,
+
+                    screen_wall->points[next_index].x,
+                    screen_wall->points[next_index].y
+                );
+            }
         }
-
         free(render_walls);
     }
 
