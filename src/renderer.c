@@ -549,6 +549,9 @@ bool renderer_draw_wall(
     Vertex *vertex_end =
         &level->vertices[wall->vertex_end];
 
+    Sector *sector =
+        &level->sectors[wall->sector];
+
     /*
      * Bottom left
      */
@@ -556,7 +559,7 @@ bool renderer_draw_wall(
         renderer_world_to_camera(
             player,
             vertex_start->x,
-            wall->bottom_height,
+            sector->floor_height,
             vertex_start->z
         );
 
@@ -568,7 +571,7 @@ bool renderer_draw_wall(
         renderer_world_to_camera(
             player,
             vertex_end->x,
-            wall->bottom_height,
+            sector->floor_height,
             vertex_end->z
         );
 
@@ -580,7 +583,7 @@ bool renderer_draw_wall(
         renderer_world_to_camera(
             player,
             vertex_end->x,
-            wall->top_height,
+            sector->ceiling_height,
             vertex_end->z
         );
 
@@ -592,7 +595,7 @@ bool renderer_draw_wall(
         renderer_world_to_camera(
             player,
             vertex_start->x,
-            wall->top_height,
+            sector->ceiling_height,
             vertex_start->z
         );
 

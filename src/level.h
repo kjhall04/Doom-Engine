@@ -10,8 +10,7 @@ typedef struct Wall {
     int vertex_start;
     int vertex_end;
 
-    float bottom_height;
-    float top_height;
+    int sector;
 } Wall;
 
 typedef struct Sector {
