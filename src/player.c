@@ -29,6 +29,9 @@ void player_init(Player *player) {
     player->sector = 0;
 
     player->grounded = true;
+
+    player->stepping = false;
+    player->step_target_y = 0.0f;
 }
 
 
@@ -278,31 +281,25 @@ static bool player_can_pass_portal(
             destination->ceiling_height
         );
 
-    const float max_step_height = 1.0f;
+    // The opening must be tall enough for the player.
 
-    float floor_difference =
-        destination->floor_height -
-        current_sector->floor_height;
-
-    // The destination floor is too high
-    if (floor_difference > max_step_height) {
-        return false;
-    }
-
-    // The opening is not tall enough for the player
     if (
         opening_top -
-        destination->floor_height <
+        opening_bottom <
         player->height
     ) {
         return false;
     }
 
-    // Check the player's current position
-    // against the top of the opening
     float player_top =
         player->y +
         player->height;
+
+    // The player's body must fit inside the opening.
+
+    if (player->y < opening_bottom) {
+        return false;
+    }
 
     if (player_top > opening_top) {
         return false;
@@ -312,11 +309,43 @@ static bool player_can_pass_portal(
 }
 
 
+static bool player_can_walk_through_portal(
+    Player *player,
+    Level *level,
+    int destination_sector
+) {
+
+    Sector *current_sector =
+        &level->sectors[player->sector];
+
+    Sector *destination =
+        &level->sectors[destination_sector];
+
+    const float max_step_height = 1.0f;
+
+    float floor_difference =
+        destination->floor_height -
+        current_sector->floor_height;
+
+    return floor_difference <=
+        max_step_height;
+}
+
+
 // Check whether a wall should be treated as solid
 static bool player_wall_is_solid(
     Player *player,
-    Wall *wall
+    Level *level,
+    Wall *wall,
+    Wall *ignored_portal
 ) {
+
+    // This is the portal we have just successfully
+    // crossed, so it cannot block this movement step.
+
+    if (wall == ignored_portal) {
+        return false;
+    }
 
     // Wall does not belong to the player's
     // current sector
@@ -332,7 +361,43 @@ static bool player_wall_is_solid(
         return true;
     }
 
-    // A two sided wall is a portal
+    // This is a portal
+    // Determine where the player would go
+    int destination_sector =
+        player_get_portal_destination(
+            player,
+            wall
+        );
+
+    // If the portal cannot be traversed,
+    // treat it like a solid wall
+    if (
+        !player_can_pass_portal(
+            player,
+            level,
+            wall,
+            destination_sector
+        )
+    ) {
+        return true;
+    }
+
+    // A grounded player must also respect
+    // the maximum walking step.
+
+    if (player->grounded) {
+
+        if (
+            !player_can_walk_through_portal(
+                player,
+                level,
+                destination_sector
+            )
+        ) {
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -354,8 +419,12 @@ void player_update(
     const float mouse_sensitivity = 0.0025f;
     const float max_pitch = 1.55f;
 
+    const float collision_step = 0.1f;
+    const float step_speed = 8.0f;
+
 
     // Get the current sector
+
     Sector *current_sector =
         &level->sectors[player->sector];
 
@@ -365,17 +434,20 @@ void player_update(
 
     // Grounding
 
-    player->grounded =
-        player->y <=
-        floor_height + 0.001f;
+    if (!player->stepping) {
 
-    if (player->grounded) {
+        player->grounded =
+            player->y <=
+            floor_height + 0.001f;
 
-        player->y =
-            floor_height;
+        if (player->grounded) {
 
-        if (player->velocity_y < 0.0f) {
-            player->velocity_y = 0.0f;
+            player->y =
+                floor_height;
+
+            if (player->velocity_y < 0.0f) {
+                player->velocity_y = 0.0f;
+            }
         }
     }
 
@@ -384,6 +456,7 @@ void player_update(
 
     if (
         player->grounded &&
+        !player->stepping &&
         input->jump
     ) {
 
@@ -397,8 +470,15 @@ void player_update(
             false;
     }
 
-    player->velocity_y -=
-        gravity * delta_time;
+
+    // Gravity
+
+    if (!player->stepping) {
+
+        player->velocity_y -=
+            gravity *
+            delta_time;
+    }
 
 
     // Mouse look
@@ -515,196 +595,200 @@ void player_update(
         acceleration_rate;
 
 
-    // Save the old position
+    /*
+     * Calculate total horizontal movement.
+     *
+     * We divide it into small steps so that a player
+     * cannot move completely through a wall between
+     * collision checks.
+     */
 
-    float old_x =
-        player->x;
-
-    float old_z =
-        player->z;
-
-
-    // Calculate desired position
-
-    float new_x =
-        player->x +
+    float movement_x =
         player->velocity_x *
         delta_time;
 
-    float new_z =
-        player->z +
+    float movement_z =
         player->velocity_z *
         delta_time;
 
+    float movement_distance =
+        sqrtf(
+            movement_x * movement_x +
+            movement_z * movement_z
+        );
 
-    // Check for portal crossings
+    int movement_steps =
+        (int)ceilf(
+            movement_distance /
+            collision_step
+        );
 
-    int new_sector =
-        player->sector;
+    if (movement_steps < 1) {
+        movement_steps = 1;
+    }
+
+    float step_x =
+        movement_x /
+        (float)movement_steps;
+
+    float step_z =
+        movement_z /
+        (float)movement_steps;
+
+
+    /*
+     * Horizontal movement
+     *
+     * Each small movement is checked independently.
+     */
 
     for (
-        int i = 0;
-        i < level->wall_count;
-        i++
+        int step = 0;
+        step < movement_steps;
+        step++
     ) {
 
-        Wall *wall =
-            &level->walls[i];
+        float old_x =
+            player->x;
 
-        if (wall->back_sector < 0) {
-            continue;
-        }
+        float old_z =
+            player->z;
 
-        if (
-            wall->front_sector !=
-                player->sector &&
-            wall->back_sector !=
-                player->sector
+        float new_x =
+            player->x +
+            step_x;
+
+        float new_z =
+            player->z +
+            step_z;
+
+        int previous_sector =
+            player->sector;
+
+        int new_sector =
+            player->sector;
+
+        Wall *crossed_portal =
+            NULL;
+
+
+        /*
+         * Check for portal crossings.
+         */
+
+        for (
+            int i = 0;
+            i < level->wall_count;
+            i++
         ) {
-            continue;
-        }
 
-        Vertex *start =
-            &level->vertices[
-                wall->vertex_start
-            ];
+            Wall *wall =
+                &level->walls[i];
 
-        Vertex *end =
-            &level->vertices[
-                wall->vertex_end
-            ];
+            // Not a portal.
 
-        if (
-            !player_crossed_wall(
-                old_x,
-                old_z,
-                new_x,
-                new_z,
-                start,
-                end
-            )
-        ) {
-            continue;
-        }
+            if (wall->back_sector < 0) {
+                continue;
+            }
 
-        int destination_sector =
-            player_get_portal_destination(
-                player,
-                wall
-            );
+            // The wall must belong to the
+            // player's current sector.
 
-        if (player_can_pass_portal(
-                player,
-                level,
-                wall,
-                destination_sector
-            )
-        ) {
+            if (
+                wall->front_sector !=
+                    player->sector &&
+                wall->back_sector !=
+                    player->sector
+            ) {
+                continue;
+            }
+
+            Vertex *start =
+                &level->vertices[
+                    wall->vertex_start
+                ];
+
+            Vertex *end =
+                &level->vertices[
+                    wall->vertex_end
+                ];
+
+
+            // Did this small movement step
+            // cross the portal?
+
+            if (
+                !player_crossed_wall(
+                    old_x,
+                    old_z,
+                    new_x,
+                    new_z,
+                    start,
+                    end
+                )
+            ) {
+                continue;
+            }
+
+
+            int destination_sector =
+                player_get_portal_destination(
+                    player,
+                    wall
+                );
+
+
+            // Does the player physically fit?
+
+            if (
+                !player_can_pass_portal(
+                    player,
+                    level,
+                    wall,
+                    destination_sector
+                )
+            ) {
+                continue;
+            }
+
+
+            /*
+             * A grounded player must also be able
+             * to walk up the step.
+             */
+
+            if (player->grounded) {
+
+                if (
+                    !player_can_walk_through_portal(
+                        player,
+                        level,
+                        destination_sector
+                    )
+                ) {
+                    continue;
+                }
+            }
+
+
+            // The portal can be crossed.
 
             new_sector =
                 destination_sector;
 
-            float destination_floor =
-                level->sectors[
-                    destination_sector
-                ].floor_height;
-
-            // If we are walking across the portal,
-            // place the player's feet on the new floor.
-            if (player->grounded) {
-
-                player->y =
-                    destination_floor;
-
-                player->velocity_y =
-                    0.0f;
-            }
+            crossed_portal =
+                wall;
 
             break;
         }
-    }
 
 
-    // Temporarily use the destination sector
-    // while checking the new position
+        /*
+         * Check the complete movement.
+         */
 
-    int previous_sector =
-        player->sector;
-
-    player->sector =
-        new_sector;
-
-
-    // Check solid wall collisions
-
-    bool blocked = false;
-
-    for (
-        int i = 0;
-        i < level->wall_count;
-        i++
-    ) {
-
-        Wall *wall =
-            &level->walls[i];
-
-        if (
-            !player_wall_is_solid(
-                player,
-                wall
-            )
-        ) {
-            continue;
-        }
-
-        if (
-            player_collides_with_wall(
-                new_x,
-                new_z,
-                level,
-                wall
-            )
-        ) {
-
-            blocked = true;
-            break;
-        }
-    }
-
-
-    // Move normally if nothing blocked us
-
-    if (!blocked) {
-
-        player->x =
-            new_x;
-
-        player->z =
-            new_z;
-    }
-
-    // Otherwise resolve X and Z separately
-
-    else {
-
-        float x_only =
-            player->x +
-            player->velocity_x *
-            delta_time;
-
-        float z_only =
-            player->z +
-            player->velocity_z *
-            delta_time;
-
-        bool x_blocked =
+        bool blocked =
             false;
-
-        bool z_blocked =
-            false;
-
-
-        // Check X movement
 
         for (
             int i = 0;
@@ -718,7 +802,133 @@ void player_update(
             if (
                 !player_wall_is_solid(
                     player,
+                    level,
+                    wall,
+                    crossed_portal
+                )
+            ) {
+                continue;
+            }
+
+            if (
+                player_collides_with_wall(
+                    new_x,
+                    new_z,
+                    level,
                     wall
+                )
+            ) {
+
+                blocked =
+                    true;
+
+                break;
+            }
+        }
+
+
+        /*
+         * Complete movement succeeded.
+         */
+
+        if (!blocked) {
+
+            player->x =
+                new_x;
+
+            player->z =
+                new_z;
+
+            // The horizontal movement succeeded.
+            // Now commit the sector transition.
+
+            if (
+                new_sector !=
+                previous_sector
+            ) {
+
+                player->sector =
+                    new_sector;
+            }
+
+            /*
+             * We successfully crossed into another
+             * sector while standing on the floor.
+             */
+
+            if (
+                player->grounded &&
+                new_sector !=
+                    previous_sector
+            ) {
+
+                float destination_floor =
+                    level->sectors[
+                        new_sector
+                    ].floor_height;
+
+                /*
+                 * Start smooth step movement.
+                 */
+
+                if (
+                    fabsf(
+                        destination_floor -
+                        player->y
+                    ) > 0.001f
+                ) {
+
+                    player->stepping =
+                        true;
+
+                    player->step_target_y =
+                        destination_floor;
+
+                    player->velocity_y =
+                        0.0f;
+                }
+            }
+
+            continue;
+        }
+
+
+        /*
+         * Complete movement was blocked.
+         *
+         * Restore the previous sector.
+         */
+
+        player->sector =
+            previous_sector;
+
+
+        /*
+         * Try X movement independently.
+         */
+
+        bool x_blocked =
+            false;
+
+        float x_only =
+            player->x +
+            step_x;
+
+        for (
+            int i = 0;
+            i < level->wall_count;
+            i++
+        ) {
+
+            Wall *wall =
+                &level->walls[i];
+
+            if (
+                !player_wall_is_solid(
+                    player,
+                    level,
+                    wall,
+                    crossed_portal
                 )
             ) {
                 continue;
@@ -735,11 +945,29 @@ void player_update(
 
                 x_blocked =
                     true;
+
+                break;
             }
         }
 
 
-        // Check Z movement
+        if (!x_blocked) {
+
+            player->x =
+                x_only;
+        }
+
+
+        /*
+         * Try Z movement independently.
+         */
+
+        bool z_blocked =
+            false;
+
+        float z_only =
+            player->z +
+            step_z;
 
         for (
             int i = 0;
@@ -753,7 +981,9 @@ void player_update(
             if (
                 !player_wall_is_solid(
                     player,
-                    wall
+                    level,
+                    wall,
+                    crossed_portal
                 )
             ) {
                 continue;
@@ -770,20 +1000,9 @@ void player_update(
 
                 z_blocked =
                     true;
+
+                break;
             }
-        }
-
-
-        if (!x_blocked) {
-
-            player->x =
-                x_only;
-        }
-
-        else {
-
-            player->velocity_x =
-                0.0f;
         }
 
 
@@ -793,40 +1012,114 @@ void player_update(
                 z_only;
         }
 
-        else {
+
+        /*
+         * If both directions were blocked,
+         * stop the corresponding velocity.
+         */
+
+        if (x_blocked) {
+
+            player->velocity_x =
+                0.0f;
+        }
+
+        if (z_blocked) {
 
             player->velocity_z =
                 0.0f;
         }
-    }
 
 
-    // If the attempted portal crossing was blocked,
-    // restore the previous sector
-
-    if (blocked) {
+        /*
+         * We cannot cross the portal during this
+         * movement step, so remain in the original
+         * sector.
+         */
 
         player->sector =
             previous_sector;
     }
 
 
-    // Apply vertical movement
+    /*
+     * Vertical movement
+     */
 
-    player->y +=
-        player->velocity_y *
-        delta_time;
+    if (player->stepping) {
+
+        float difference =
+            player->step_target_y -
+            player->y;
+
+        float step_amount =
+            difference *
+            step_speed *
+            delta_time;
 
 
-    // Apply floor collision again after vertical movement
+        // Prevent overshooting.
+
+        if (
+            fabsf(step_amount) >
+            fabsf(difference)
+        ) {
+
+            step_amount =
+                difference;
+        }
+
+
+        player->y +=
+            step_amount;
+
+        player->velocity_y =
+            0.0f;
+
+
+        // Step completed.
+
+        if (
+            fabsf(
+                player->step_target_y -
+                player->y
+            ) < 0.001f
+        ) {
+
+            player->y =
+                player->step_target_y;
+
+            player->stepping =
+                false;
+
+            player->grounded =
+                true;
+        }
+    }
+
+    else {
+
+        player->y +=
+            player->velocity_y *
+            delta_time;
+    }
+
+
+    /*
+     * Apply floor collision.
+     */
 
     current_sector =
-        &level->sectors[player->sector];
+        &level->sectors[
+            player->sector
+        ];
 
     floor_height =
         current_sector->floor_height;
 
+
     if (
+        !player->stepping &&
         player->y <=
         floor_height
     ) {

@@ -32,6 +32,10 @@ typedef struct Player {
 
     // Ground things
     bool grounded;
+
+    // Step Transistion
+    bool stepping;
+    float step_target_y;
 } Player;
 
 void player_init(Player *player);
