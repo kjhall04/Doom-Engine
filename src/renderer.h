@@ -7,18 +7,25 @@
 #include <stdbool.h>
 
 #define MAX_SCREEN_WALL_POINTS 16
+#define MAX_SCREEN_WALL_POLYGONS 3
 
 typedef struct ScreenPoint {
     float x;
     float y;
 } ScreenPoint;
 
+
 typedef struct ScreenPolygon {
     ScreenPoint points[MAX_SCREEN_WALL_POINTS];
     int point_count;
 } ScreenPolygon;
 
-#define MAX_WALL_LINES 4
+
+typedef struct ScreenWall {
+    ScreenPolygon polygons[MAX_SCREEN_WALL_POLYGONS];
+    int polygon_count;
+} ScreenWall;
+
 
 bool renderer_project_point(
     Player *player,
@@ -37,7 +44,7 @@ bool renderer_draw_wall(
     Wall *wall,
     float screen_width,
     float screen_height,
-    ScreenPolygon *screen_wall
+    ScreenWall *screen_wall
 );
 
 #endif

@@ -12,14 +12,14 @@
 #define WINDOW_HEIGHT 1080
 
 typedef struct RenderWall {
-    ScreenPolygon screen_wall;
+    ScreenWall screen_wall;
     float distance;
 } RenderWall;
 
 static float game_wall_distance(
     Player *player,
-    Level *level,
-    Wall *wall
+    Wall *wall,
+    Level *level
 ) {
     Vertex *vertex_start =
         &level->vertices[wall->vertex_start];
@@ -152,7 +152,8 @@ void game_update(Game *game, float delta_time) {
 }
 
 // Draw the window
-void game_draw(struct Game *game) {
+void game_draw(Game *game) {
+
     SDL_SetRenderDrawColor(
         game->renderer,
         0,
@@ -161,153 +162,205 @@ void game_draw(struct Game *game) {
         255
     );
 
-    SDL_RenderClear(game->renderer);
 
-    int width;
-    int height;
-
-    SDL_GetWindowSize(
-        game->window,
-        &width,
-        &height
+    SDL_RenderClear(
+        game->renderer
     );
 
-    for (int i = 0; i < game->level.wall_count; i++) {
 
-        RenderWall *render_walls =
-            malloc(
-                sizeof(RenderWall) *
-                game->level.wall_count
+    int screen_width;
+    int screen_height;
+
+
+    SDL_GetRenderOutputSize(
+        game->renderer,
+        &screen_width,
+        &screen_height
+    );
+
+
+    RenderWall *render_walls =
+        malloc(
+            sizeof(RenderWall) *
+            game->level.wall_count
+        );
+
+
+    if (!render_walls) {
+        SDL_RenderPresent(
+            game->renderer
+        );
+
+        return;
+    }
+
+
+    int render_wall_count = 0;
+
+
+    /*
+     * Build the list of visible walls.
+     */
+    for (
+        int i = 0;
+        i < game->level.wall_count;
+        i++
+    ) {
+
+        ScreenWall screen_wall;
+
+
+        if (!renderer_draw_wall(
+            &game->player,
+            &game->level,
+            &game->level.walls[i],
+            (float)screen_width,
+            (float)screen_height,
+            &screen_wall
+        )) {
+            continue;
+        }
+
+
+        render_walls[
+            render_wall_count
+        ].screen_wall =
+            screen_wall;
+
+
+        render_walls[
+            render_wall_count
+        ].distance =
+            game_wall_distance(
+                &game->player,
+                &game->level.walls[i],
+                &game->level
             );
 
-        if (render_walls == NULL) {
-            SDL_RenderPresent(game->renderer);
-            return;
-        }
+
+        render_wall_count++;
+    }
 
 
-        int render_wall_count = 0;
+    /*
+     * Sort from farthest to nearest.
+     */
+    for (
+        int i = 0;
+        i < render_wall_count - 1;
+        i++
+    ) {
 
+        for (
+            int j = i + 1;
+            j < render_wall_count;
+            j++
+        ) {
 
-        /*
-        * Project every visible wall.
-        */
-        for (int i = 0;
-            i < game->level.wall_count;
-            i++) {
+            if (
+                render_walls[j].distance >
+                render_walls[i].distance
+            ) {
 
-            Wall *wall =
-                &game->level.walls[i];
+                RenderWall temporary =
+                    render_walls[i];
 
-            ScreenPolygon screen_wall;
+                render_walls[i] =
+                    render_walls[j];
 
-            bool wall_visible =
-                renderer_draw_wall(
-                    &game->player,
-                    &game->level,
-                    wall,
-                    (float)width,
-                    (float)height,
-                    &screen_wall
-                );
-
-            if (!wall_visible) {
-                continue;
-            }
-
-
-            RenderWall *render_wall =
-                &render_walls[render_wall_count];
-
-            render_wall->screen_wall =
-                screen_wall;
-
-            render_wall->distance =
-                game_wall_distance(
-                    &game->player,
-                    &game->level,
-                    wall
-                );
-
-            render_wall_count++;
-        }
-
-
-        /*
-        * Sort from farthest to nearest.
-        */
-        for (int i = 0;
-            i < render_wall_count - 1;
-            i++) {
-
-            for (int j = i + 1;
-                j < render_wall_count;
-                j++) {
-
-                if (
-                    render_walls[j].distance >
-                    render_walls[i].distance
-                ) {
-
-                    RenderWall temporary =
-                        render_walls[i];
-
-                    render_walls[i] =
-                        render_walls[j];
-
-                    render_walls[j] =
-                        temporary;
-                }
+                render_walls[j] =
+                    temporary;
             }
         }
+    }
+
+
+    /*
+     * Draw every visible wall.
+     */
+    for (
+        int wall_index = 0;
+        wall_index < render_wall_count;
+        wall_index++
+    ) {
+
+        ScreenWall *screen_wall =
+            &render_walls[
+                wall_index
+            ].screen_wall;
 
 
         /*
-        * Draw the walls.
-        */
-        for (int i = 0;
-            i < render_wall_count;
-            i++) {
+         * A wall can contain multiple
+         * polygons.
+         */
+        for (
+            int polygon_index = 0;
+            polygon_index <
+                screen_wall->polygon_count;
+            polygon_index++
+        ) {
 
-            ScreenPolygon *screen_wall =
-                &render_walls[i].screen_wall;
+            ScreenPolygon *polygon =
+                &screen_wall->polygons[
+                    polygon_index
+                ];
 
 
-            /*
-            * Create one SDL vertex for every
-            * point in the clipped wall.
-            */
             SDL_Vertex vertices[
                 MAX_SCREEN_WALL_POINTS
             ];
 
 
-            for (int point_index = 0;
-                point_index < screen_wall->point_count;
-                point_index++) {
+            for (
+                int point_index = 0;
+                point_index <
+                    polygon->point_count;
+                point_index++
+            ) {
 
-                vertices[point_index].position.x =
-                    screen_wall->points[point_index].x;
+                vertices[
+                    point_index
+                ].position.x =
+                    polygon->points[
+                        point_index
+                    ].x;
 
-                vertices[point_index].position.y =
-                    screen_wall->points[point_index].y;
+                vertices[
+                    point_index
+                ].position.y =
+                    polygon->points[
+                        point_index
+                    ].y;
 
-                vertices[point_index].color.r = 255;
-                vertices[point_index].color.g = 255;
-                vertices[point_index].color.b = 255;
-                vertices[point_index].color.a = 255;
 
-                vertices[point_index].tex_coord.x = 0.0f;
-                vertices[point_index].tex_coord.y = 0.0f;
+                vertices[
+                    point_index
+                ].color.r = 255;
+
+                vertices[
+                    point_index
+                ].color.g = 255;
+
+                vertices[
+                    point_index
+                ].color.b = 255;
+
+                vertices[
+                    point_index
+                ].color.a = 255;
+
+
+                vertices[
+                    point_index
+                ].tex_coord.x = 0.0f;
+
+                vertices[
+                    point_index
+                ].tex_coord.y = 0.0f;
             }
 
 
-            /*
-            * A polygon with N points can be
-            * represented as N minus 2 triangles.
-            *
-            * We use a triangle fan.
-            */
             int indices[
                 (MAX_SCREEN_WALL_POINTS - 2) * 3
             ];
@@ -316,13 +369,21 @@ void game_draw(struct Game *game) {
             int index_count = 0;
 
 
-            for (int triangle = 1;
-                triangle < screen_wall->point_count - 1;
-                triangle++) {
+            /*
+             * Convert the polygon into
+             * a triangle fan.
+             */
+            for (
+                int triangle = 1;
+                triangle <
+                    polygon->point_count - 1;
+                triangle++
+            ) {
 
                 indices[index_count++] = 0;
                 indices[index_count++] = triangle;
-                indices[index_count++] = triangle + 1;
+                indices[index_count++] =
+                    triangle + 1;
             }
 
 
@@ -330,15 +391,15 @@ void game_draw(struct Game *game) {
                 game->renderer,
                 NULL,
                 vertices,
-                screen_wall->point_count,
+                polygon->point_count,
                 indices,
                 index_count
             );
 
 
             /*
-            * Draw the blue outline.
-            */
+             * Draw the blue debugging outline.
+             */
             SDL_SetRenderDrawColor(
                 game->renderer,
                 0,
@@ -348,30 +409,44 @@ void game_draw(struct Game *game) {
             );
 
 
-            for (int point_index = 0;
-                point_index < screen_wall->point_count;
-                point_index++) {
+            for (
+                int point_index = 0;
+                point_index <
+                    polygon->point_count;
+                point_index++
+            ) {
 
-                int next_index =
+                int next_point =
                     (point_index + 1) %
-                    screen_wall->point_count;
+                    polygon->point_count;
 
 
                 SDL_RenderLine(
                     game->renderer,
-
-                    screen_wall->points[point_index].x,
-                    screen_wall->points[point_index].y,
-
-                    screen_wall->points[next_index].x,
-                    screen_wall->points[next_index].y
+                    polygon->points[
+                        point_index
+                    ].x,
+                    polygon->points[
+                        point_index
+                    ].y,
+                    polygon->points[
+                        next_point
+                    ].x,
+                    polygon->points[
+                        next_point
+                    ].y
                 );
             }
         }
-        free(render_walls);
     }
 
-    SDL_RenderPresent(game->renderer);
+
+    free(render_walls);
+
+
+    SDL_RenderPresent(
+        game->renderer
+    );
 }
 
 // Run the game and get time

@@ -530,73 +530,51 @@ bool renderer_project_point(
 }
 
 
-/*
- * Convert a wall into a clipped screen polygon.
- */
-bool renderer_draw_wall(
+static bool renderer_project_wall_section(
     Player *player,
-    Level *level,
-    Wall *wall,
+    float x1,
+    float z1,
+    float x2,
+    float z2,
+    float bottom_height,
+    float top_height,
     float screen_width,
     float screen_height,
-    ScreenPolygon *screen_wall
+    ScreenPolygon *screen_polygon
 ) {
     CameraPoint wall_points[4];
 
-    Vertex *vertex_start =
-        &level->vertices[wall->vertex_start];
 
-    Vertex *vertex_end =
-        &level->vertices[wall->vertex_end];
-
-    Sector *sector =
-        &level->sectors[wall->sector];
-
-    /*
-     * Bottom left
-     */
     wall_points[0] =
         renderer_world_to_camera(
             player,
-            vertex_start->x,
-            sector->floor_height,
-            vertex_start->z
+            x1,
+            bottom_height,
+            z1
         );
 
-
-    /*
-     * Bottom right
-     */
     wall_points[1] =
         renderer_world_to_camera(
             player,
-            vertex_end->x,
-            sector->floor_height,
-            vertex_end->z
+            x2,
+            bottom_height,
+            z2
         );
 
-
-    /*
-     * Top right
-     */
     wall_points[2] =
         renderer_world_to_camera(
             player,
-            vertex_end->x,
-            sector->ceiling_height,
-            vertex_end->z
+            x2,
+            top_height,
+            z2
         );
 
-
-    /*
-     * Top left
-     */
     wall_points[3] =
         renderer_world_to_camera(
             player,
-            vertex_start->x,
-            sector->ceiling_height,
-            vertex_start->z
+            x1,
+            top_height,
+            z1
         );
 
 
@@ -620,7 +598,7 @@ bool renderer_draw_wall(
     }
 
 
-    screen_wall->point_count =
+    screen_polygon->point_count =
         point_count;
 
 
@@ -630,7 +608,7 @@ bool renderer_draw_wall(
             &clipped_points[i],
             screen_width,
             screen_height,
-            &screen_wall->points[i]
+            &screen_polygon->points[i]
         )) {
             return false;
         }
@@ -638,4 +616,159 @@ bool renderer_draw_wall(
 
 
     return true;
+}
+
+
+
+/*
+ * Convert a wall into a clipped screen polygon.
+ */
+bool renderer_draw_wall(
+    Player *player,
+    Level *level,
+    Wall *wall,
+    float screen_width,
+    float screen_height,
+    ScreenWall *screen_wall
+) {
+    screen_wall->polygon_count = 0;
+
+
+    if (wall->front_sector < 0 ||
+        wall->front_sector >= level->sector_count) {
+        return false;
+    }
+
+
+    Vertex *vertex_start =
+        &level->vertices[wall->vertex_start];
+
+    Vertex *vertex_end =
+        &level->vertices[wall->vertex_end];
+
+
+    Sector *front_sector =
+        &level->sectors[wall->front_sector];
+
+
+    /*
+     * One sided wall.
+     *
+     * The entire wall is solid.
+     */
+    if (wall->back_sector < 0) {
+
+        if (renderer_project_wall_section(
+            player,
+            vertex_start->x,
+            vertex_start->z,
+            vertex_end->x,
+            vertex_end->z,
+            front_sector->floor_height,
+            front_sector->ceiling_height,
+            screen_width,
+            screen_height,
+            &screen_wall->polygons[0]
+        )) {
+            screen_wall->polygon_count = 1;
+
+            return true;
+        }
+
+        return false;
+    }
+
+
+    /*
+     * Validate the back sector.
+     */
+    if (wall->back_sector >=
+        level->sector_count) {
+        return false;
+    }
+
+
+    Sector *back_sector =
+        &level->sectors[wall->back_sector];
+
+
+    /*
+     * The opening between the two sectors
+     * is limited by the higher floor and
+     * lower ceiling.
+     */
+    float opening_bottom =
+        fmaxf(
+            front_sector->floor_height,
+            back_sector->floor_height
+        );
+
+
+    float opening_top =
+        fminf(
+            front_sector->ceiling_height,
+            back_sector->ceiling_height
+        );
+
+
+    /*
+     * Lower wall section.
+     */
+    if (front_sector->floor_height <
+        opening_bottom) {
+
+        if (screen_wall->polygon_count <
+            MAX_SCREEN_WALL_POLYGONS) {
+
+            if (renderer_project_wall_section(
+                player,
+                vertex_start->x,
+                vertex_start->z,
+                vertex_end->x,
+                vertex_end->z,
+                front_sector->floor_height,
+                opening_bottom,
+                screen_width,
+                screen_height,
+                &screen_wall->polygons[
+                    screen_wall->polygon_count
+                ]
+            )) {
+                screen_wall->polygon_count++;
+            }
+        }
+    }
+
+
+    /*
+     * Upper wall section.
+     */
+    if (opening_top <
+        front_sector->ceiling_height) {
+
+        if (screen_wall->polygon_count <
+            MAX_SCREEN_WALL_POLYGONS) {
+
+            if (renderer_project_wall_section(
+                player,
+                vertex_start->x,
+                vertex_start->z,
+                vertex_end->x,
+                vertex_end->z,
+                opening_top,
+                front_sector->ceiling_height,
+                screen_width,
+                screen_height,
+                &screen_wall->polygons[
+                    screen_wall->polygon_count
+                ]
+            )) {
+                screen_wall->polygon_count++;
+            }
+        }
+    }
+
+
+    return
+        screen_wall->polygon_count > 0;
 }

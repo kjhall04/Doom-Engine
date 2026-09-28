@@ -13,6 +13,7 @@ typedef struct Player {
     float z;
 
     float eye_height;
+    float height;
 
     // Velocity
     float velocity_x;
@@ -26,6 +27,8 @@ typedef struct Player {
     // Movement
     float move_speed;
     float acceleration;
+
+    int sector;
 
     // Ground things
     bool grounded;
