@@ -104,12 +104,12 @@ void level_init(Level *level) {
 
     level->sectors[0] = (Sector){
         0.0,
-        3.0f
+        100.0f
     };
 
     level->sectors[1] = (Sector){
         1.0f,
-        4.0f
+        100.0f
     };
 }
 
