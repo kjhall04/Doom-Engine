@@ -5,6 +5,7 @@
 #include "level.h"
 
 #include <stdbool.h>
+#include <SDL3/SDL.h>
 
 #define MAX_SCREEN_WALL_POINTS 16
 #define MAX_SCREEN_WALL_POLYGONS 3
@@ -45,6 +46,19 @@ bool renderer_draw_wall(
     float screen_width,
     float screen_height,
     ScreenWall *screen_wall
+);
+
+void renderer_draw_screen_wall(
+    SDL_Renderer *renderer,
+    ScreenWall *screen_wall
+);
+
+void renderer_render(
+    SDL_Renderer *renderer,
+    Player *player,
+    Level *level,
+    float screen_width,
+    float screen_height
 );
 
 #endif

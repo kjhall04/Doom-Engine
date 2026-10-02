@@ -14,6 +14,11 @@ typedef struct CameraPoint {
     float z;
 } CameraPoint;
 
+typedef struct RenderWall {
+    ScreenWall screen_wall;
+    float distance;
+} RenderWall;
+
 
 /*
  * Convert a world position into camera space.
@@ -771,4 +776,263 @@ bool renderer_draw_wall(
 
     return
         screen_wall->polygon_count > 0;
+}
+
+
+static float renderer_wall_distance(
+    Player *player,
+    Wall *wall,
+    Level *level
+) {
+    Vertex *vertex_start =
+        &level->vertices[wall->vertex_start];
+
+    Vertex *vertex_end =
+        &level->vertices[wall->vertex_end];
+
+    float center_x =
+        (vertex_start->x + vertex_end->x) * 0.5f;
+
+    float center_z =
+        (vertex_start->z + vertex_end->z) * 0.5f;
+
+    float difference_x =
+        center_x - player->x;
+
+    float difference_z =
+        center_z - player->z;
+
+    return
+        difference_x * difference_x +
+        difference_z * difference_z;
+}
+
+
+void renderer_draw_screen_wall(
+    SDL_Renderer *renderer,
+    ScreenWall *screen_wall
+) {
+    for (
+        int polygon_index = 0;
+        polygon_index < screen_wall->polygon_count;
+        polygon_index++
+    ) {
+
+        ScreenPolygon *polygon =
+            &screen_wall->polygons[
+                polygon_index
+            ];
+
+        SDL_Vertex vertices[
+            MAX_SCREEN_WALL_POINTS
+        ];
+
+        for (
+            int point_index = 0;
+            point_index < polygon->point_count;
+            point_index++
+        ) {
+
+            vertices[
+                point_index
+            ].position.x =
+                polygon->points[
+                    point_index
+                ].x;
+
+            vertices[
+                point_index
+            ].position.y =
+                polygon->points[
+                    point_index
+                ].y;
+
+            vertices[
+                point_index
+            ].color.r = 255;
+
+            vertices[
+                point_index
+            ].color.g = 255;
+
+            vertices[
+                point_index
+            ].color.b = 255;
+
+            vertices[
+                point_index
+            ].color.a = 255;
+
+            vertices[
+                point_index
+            ].tex_coord.x = 0.0f;
+
+            vertices[
+                point_index
+            ].tex_coord.y = 0.0f;
+        }
+
+        int indices[
+            (MAX_SCREEN_WALL_POINTS - 2) * 3
+        ];
+
+        int index_count = 0;
+
+        for (
+            int triangle = 1;
+            triangle < polygon->point_count - 1;
+            triangle++
+        ) {
+
+            indices[index_count++] = 0;
+            indices[index_count++] = triangle;
+            indices[index_count++] = triangle + 1;
+        }
+
+        SDL_RenderGeometry(
+            renderer,
+            NULL,
+            vertices,
+            polygon->point_count,
+            indices,
+            index_count
+        );
+
+        SDL_SetRenderDrawColor(
+            renderer,
+            0,
+            100,
+            255,
+            255
+        );
+
+        for (
+            int point_index = 0;
+            point_index < polygon->point_count;
+            point_index++
+        ) {
+
+            int next_point =
+                (point_index + 1) %
+                polygon->point_count;
+
+            SDL_RenderLine(
+                renderer,
+                polygon->points[
+                    point_index
+                ].x,
+                polygon->points[
+                    point_index
+                ].y,
+                polygon->points[
+                    next_point
+                ].x,
+                polygon->points[
+                    next_point
+                ].y
+            );
+        }
+    }
+}
+
+
+void renderer_render(
+    SDL_Renderer *renderer,
+    Player *player,
+    Level *level,
+    float screen_width,
+    float screen_height
+) {
+    RenderWall *render_walls =
+        malloc(
+            sizeof(RenderWall) *
+            level->wall_count
+        );
+
+    if (!render_walls) {
+        return;
+    }
+
+    int render_wall_count = 0;
+
+    for (
+        int i = 0;
+        i < level->wall_count;
+        i++
+    ) {
+
+        ScreenWall screen_wall;
+
+        if (!renderer_draw_wall(
+            player,
+            level,
+            &level->walls[i],
+            screen_width,
+            screen_height,
+            &screen_wall
+        )) {
+            continue;
+        }
+
+        render_walls[
+            render_wall_count
+        ].screen_wall =
+            screen_wall;
+
+        render_walls[
+            render_wall_count
+        ].distance =
+            renderer_wall_distance(
+                player,
+                &level->walls[i],
+                level
+            );
+
+        render_wall_count++;
+    }
+
+    for (
+        int i = 0;
+        i < render_wall_count - 1;
+        i++
+    ) {
+
+        for (
+            int j = i + 1;
+            j < render_wall_count;
+            j++
+        ) {
+
+            if (
+                render_walls[j].distance >
+                render_walls[i].distance
+            ) {
+
+                RenderWall temporary =
+                    render_walls[i];
+
+                render_walls[i] =
+                    render_walls[j];
+
+                render_walls[j] =
+                    temporary;
+            }
+        }
+    }
+
+    for (
+        int wall_index = 0;
+        wall_index < render_wall_count;
+        wall_index++
+    ) {
+
+        renderer_draw_screen_wall(
+            renderer,
+            &render_walls[
+                wall_index
+            ].screen_wall
+        );
+    }
+
+    free(render_walls);
 }
