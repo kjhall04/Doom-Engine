@@ -7,25 +7,24 @@
 #include <stdbool.h>
 #include <SDL3/SDL.h>
 
-#define MAX_SCREEN_WALL_POINTS 16
-#define MAX_SCREEN_WALL_POLYGONS 3
+#define MAX_SCREEN_GEOMETRY_POINTS 16
+#define MAX_SCREEN_GEOMETRY_POLYGONS 3
 
 typedef struct ScreenPoint {
     float x;
     float y;
 } ScreenPoint;
 
-
 typedef struct ScreenPolygon {
-    ScreenPoint points[MAX_SCREEN_WALL_POINTS];
+    ScreenPoint points[MAX_SCREEN_GEOMETRY_POINTS];
     int point_count;
 } ScreenPolygon;
 
 
-typedef struct ScreenWall {
-    ScreenPolygon polygons[MAX_SCREEN_WALL_POLYGONS];
+typedef struct ScreenGeometry {
+    ScreenPolygon polygons[MAX_SCREEN_GEOMETRY_POLYGONS];
     int polygon_count;
-} ScreenWall;
+} ScreenGeometry;
 
 
 bool renderer_project_point(
@@ -45,20 +44,18 @@ bool renderer_draw_wall(
     Wall *wall,
     float screen_width,
     float screen_height,
-    ScreenWall *screen_wall
+    ScreenGeometry *screen_geometry
 );
 
 void renderer_draw_screen_wall(
     SDL_Renderer *renderer,
-    ScreenWall *screen_wall
+    ScreenGeometry *screen_geometry
 );
 
 void renderer_render(
     SDL_Renderer *renderer,
     Player *player,
-    Level *level,
-    float screen_width,
-    float screen_height
+    Level *level
 );
 
 #endif

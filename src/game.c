@@ -120,40 +120,10 @@ void game_update(Game *game, float delta_time) {
 // Draw the window
 void game_draw(Game *game) {
 
-    SDL_SetRenderDrawColor(
-        game->renderer,
-        0,
-        0,
-        0,
-        255
-    );
-
-
-    SDL_RenderClear(
-        game->renderer
-    );
-
-
-    int screen_width;
-    int screen_height;
-
-
-    SDL_GetRenderOutputSize(
-        game->renderer,
-        &screen_width,
-        &screen_height
-    );
-
     renderer_render(
         game->renderer,
         &game->player,
-        &game->level,
-        (float)screen_width,
-        (float)screen_height
-    );
-
-    SDL_RenderPresent(
-        game->renderer
+        &game->level
     );
 }
 

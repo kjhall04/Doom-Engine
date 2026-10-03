@@ -1,6 +1,7 @@
 #include "renderer.h"
 
 #include <math.h>
+#include <stdlib.h>
 
 #define FOV 90.0f
 #define NEAR_PLANE 0.1f
@@ -14,11 +15,20 @@ typedef struct CameraPoint {
     float z;
 } CameraPoint;
 
-typedef struct RenderWall {
-    ScreenWall screen_wall;
-    float distance;
-} RenderWall;
+typedef enum RenderObjectType {
+    RENDER_OBJECT_WALL,
+    RENDER_OBJECT_FLOOR,
+    RENDER_OBJECT_CEILING,
+    RENDER_OBJECT_SPRITE
+} RenderObjectType;
 
+typedef struct RenderObject {
+    RenderObjectType type;
+
+    ScreenGeometry screen_geometry;
+
+    float distance;
+} RenderObject;
 
 /*
  * Convert a world position into camera space.
@@ -312,8 +322,8 @@ static int renderer_clip_wall(
     float screen_width,
     float screen_height
 ) {
-    CameraPoint buffer_a[MAX_SCREEN_WALL_POINTS];
-    CameraPoint buffer_b[MAX_SCREEN_WALL_POINTS];
+    CameraPoint buffer_a[MAX_SCREEN_GEOMETRY_POINTS];
+    CameraPoint buffer_b[MAX_SCREEN_GEOMETRY_POINTS];
 
 
     for (int i = 0; i < input_count; i++) {
@@ -584,7 +594,7 @@ static bool renderer_project_wall_section(
 
 
     CameraPoint clipped_points[
-        MAX_SCREEN_WALL_POINTS
+        MAX_SCREEN_GEOMETRY_POINTS
     ];
 
 
@@ -634,9 +644,9 @@ bool renderer_draw_wall(
     Wall *wall,
     float screen_width,
     float screen_height,
-    ScreenWall *screen_wall
+    ScreenGeometry *screen_geometry
 ) {
-    screen_wall->polygon_count = 0;
+    screen_geometry->polygon_count = 0;
 
 
     if (wall->front_sector < 0 ||
@@ -673,9 +683,9 @@ bool renderer_draw_wall(
             front_sector->ceiling_height,
             screen_width,
             screen_height,
-            &screen_wall->polygons[0]
+            &screen_geometry->polygons[0]
         )) {
-            screen_wall->polygon_count = 1;
+            screen_geometry->polygon_count = 1;
 
             return true;
         }
@@ -722,8 +732,8 @@ bool renderer_draw_wall(
     if (front_sector->floor_height <
         opening_bottom) {
 
-        if (screen_wall->polygon_count <
-            MAX_SCREEN_WALL_POLYGONS) {
+        if (screen_geometry->polygon_count <
+            MAX_SCREEN_GEOMETRY_POLYGONS) {
 
             if (renderer_project_wall_section(
                 player,
@@ -735,11 +745,11 @@ bool renderer_draw_wall(
                 opening_bottom,
                 screen_width,
                 screen_height,
-                &screen_wall->polygons[
-                    screen_wall->polygon_count
+                &screen_geometry->polygons[
+                    screen_geometry->polygon_count
                 ]
             )) {
-                screen_wall->polygon_count++;
+                screen_geometry->polygon_count++;
             }
         }
     }
@@ -751,8 +761,8 @@ bool renderer_draw_wall(
     if (opening_top <
         front_sector->ceiling_height) {
 
-        if (screen_wall->polygon_count <
-            MAX_SCREEN_WALL_POLYGONS) {
+        if (screen_geometry->polygon_count <
+            MAX_SCREEN_GEOMETRY_POLYGONS) {
 
             if (renderer_project_wall_section(
                 player,
@@ -764,18 +774,18 @@ bool renderer_draw_wall(
                 front_sector->ceiling_height,
                 screen_width,
                 screen_height,
-                &screen_wall->polygons[
-                    screen_wall->polygon_count
+                &screen_geometry->polygons[
+                    screen_geometry->polygon_count
                 ]
             )) {
-                screen_wall->polygon_count++;
+                screen_geometry->polygon_count++;
             }
         }
     }
 
 
     return
-        screen_wall->polygon_count > 0;
+        screen_geometry->polygon_count > 0;
 }
 
 
@@ -810,21 +820,21 @@ static float renderer_wall_distance(
 
 void renderer_draw_screen_wall(
     SDL_Renderer *renderer,
-    ScreenWall *screen_wall
+    ScreenGeometry *screen_geometry
 ) {
     for (
         int polygon_index = 0;
-        polygon_index < screen_wall->polygon_count;
+        polygon_index < screen_geometry->polygon_count;
         polygon_index++
     ) {
 
         ScreenPolygon *polygon =
-            &screen_wall->polygons[
+            &screen_geometry->polygons[
                 polygon_index
             ];
 
         SDL_Vertex vertices[
-            MAX_SCREEN_WALL_POINTS
+            MAX_SCREEN_GEOMETRY_POINTS
         ];
 
         for (
@@ -873,7 +883,7 @@ void renderer_draw_screen_wall(
         }
 
         int indices[
-            (MAX_SCREEN_WALL_POINTS - 2) * 3
+            (MAX_SCREEN_GEOMETRY_POINTS - 2) * 3
         ];
 
         int index_count = 0;
@@ -936,32 +946,16 @@ void renderer_draw_screen_wall(
 }
 
 
-void renderer_render(
-    SDL_Renderer *renderer,
+static int renderer_build_walls(
     Player *player,
     Level *level,
     float screen_width,
-    float screen_height
+    float screen_height,
+    RenderObject *render_objects
 ) {
-    RenderWall *render_walls =
-        malloc(
-            sizeof(RenderWall) *
-            level->wall_count
-        );
+    int render_object_count = 0;
 
-    if (!render_walls) {
-        return;
-    }
-
-    int render_wall_count = 0;
-
-    for (
-        int i = 0;
-        i < level->wall_count;
-        i++
-    ) {
-
-        ScreenWall screen_wall;
+    for (int i = 0; i < level->wall_count; i++) {
 
         if (!renderer_draw_wall(
             player,
@@ -969,27 +963,68 @@ void renderer_render(
             &level->walls[i],
             screen_width,
             screen_height,
-            &screen_wall
+            &render_objects[render_object_count].screen_geometry
         )) {
             continue;
         }
 
-        render_walls[
-            render_wall_count
-        ].screen_wall =
-            screen_wall;
-
-        render_walls[
-            render_wall_count
-        ].distance =
+        render_objects[render_object_count].distance =
             renderer_wall_distance(
                 player,
                 &level->walls[i],
                 level
             );
 
-        render_wall_count++;
+        render_object_count++;
     }
+
+    return render_object_count;
+}
+
+
+void renderer_render(
+    SDL_Renderer *renderer,
+    Player *player,
+    Level *level
+) {
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+
+    int screen_width;
+    int screen_height;
+
+    SDL_GetRenderOutputSize(
+        renderer,
+        &screen_width,
+        &screen_height
+    );
+
+    RenderObject *render_objects =
+        malloc(
+            sizeof(RenderObject) *
+            level->wall_count
+        );
+
+    if (!render_objects) {
+        return;
+    }
+
+    renderer_build_walls(
+        player,
+        level,
+        (float)screen_width,
+        (float)screen_height,
+        render_objects
+    );
+
+    int render_wall_count =
+    renderer_build_walls(
+        player,
+        level,
+        (float)screen_width,
+        (float)screen_height,
+        render_objects
+    );
 
     for (
         int i = 0;
@@ -1004,17 +1039,17 @@ void renderer_render(
         ) {
 
             if (
-                render_walls[j].distance >
-                render_walls[i].distance
+                render_objects[j].distance >
+                render_objects[i].distance
             ) {
 
-                RenderWall temporary =
-                    render_walls[i];
+                RenderObject temporary =
+                    render_objects[i];
 
-                render_walls[i] =
-                    render_walls[j];
+                render_objects[i] =
+                    render_objects[j];
 
-                render_walls[j] =
+                render_objects[j] =
                     temporary;
             }
         }
@@ -1028,11 +1063,13 @@ void renderer_render(
 
         renderer_draw_screen_wall(
             renderer,
-            &render_walls[
+            &render_objects[
                 wall_index
-            ].screen_wall
+            ].screen_geometry
         );
     }
 
-    free(render_walls);
+    free(render_objects);
+
+    SDL_RenderPresent(renderer);
 }
