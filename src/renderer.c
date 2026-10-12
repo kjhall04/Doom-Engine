@@ -8,6 +8,9 @@
 
 #define PI 3.14159265f
 
+#define MAX_SECTOR_VERTICES 64
+#define MAX_SECTOR_EDGES 64
+#define MAX_CLIPPED_POINTS (MAX_SECTOR_VERTICES * 6)
 
 typedef struct CameraPoint {
     float x;
@@ -29,6 +32,13 @@ typedef struct RenderObject {
 
     float distance;
 } RenderObject;
+
+typedef struct SectorEdge{
+    int vertex_start;
+    int vertex_end;
+    bool used;
+} SectorEdge;
+
 
 /*
  * Convert a world position into camera space.
@@ -315,16 +325,15 @@ static int renderer_clip_polygon_against_plane(
 /*
  * Clip a wall against the complete camera frustum.
  */
-static int renderer_clip_wall(
+static int renderer_clip_polygon(
     CameraPoint *input,
     int input_count,
     CameraPoint *output,
     float screen_width,
     float screen_height
 ) {
-    CameraPoint buffer_a[MAX_SCREEN_GEOMETRY_POINTS];
-    CameraPoint buffer_b[MAX_SCREEN_GEOMETRY_POINTS];
-
+    CameraPoint buffer_a[MAX_CLIPPED_POINTS];
+    CameraPoint buffer_b[MAX_CLIPPED_POINTS];
 
     for (int i = 0; i < input_count; i++) {
         buffer_a[i] = input[i];
@@ -449,6 +458,9 @@ static int renderer_clip_wall(
         return 0;
     }
 
+    if (count > MAX_SCREEN_GEOMETRY_POINTS) {
+        return 0;
+    }
 
     for (int i = 0; i < count; i++) {
         output[i] = buffer_b[i];
@@ -545,6 +557,203 @@ bool renderer_project_point(
 }
 
 
+
+static int renderer_build_sector_boundary(
+    Level *level,
+    int sector_index,
+    Vertex *vertices
+) {
+    SectorEdge edges[MAX_SECTOR_EDGES];
+    int edge_count = 0;
+
+    for (int i = 0; i < level->wall_count; i++) {
+        Wall *wall = &level->walls[i];
+
+        int start;
+        int end;
+
+        if (wall->front_sector == sector_index) {
+            start = wall->vertex_start;
+            end = wall->vertex_end;
+        }
+        else if (wall->back_sector == sector_index) {
+            start = wall->vertex_end;
+            end = wall->vertex_start;
+        }
+        else {
+            continue;
+        }
+
+        if (edge_count >= MAX_SECTOR_EDGES) {
+            return 0;
+        }
+
+        edges[edge_count].vertex_start = start;
+        edges[edge_count].vertex_end = end;
+        edges[edge_count].used = false;
+
+        edge_count++;
+    }
+
+    if (edge_count < 3) {
+        return 0;
+    }
+
+    int start_vertex = edges[0].vertex_start;
+    int current_vertex = start_vertex;
+    int vertex_count = 0;
+
+    while (vertex_count < MAX_SECTOR_VERTICES) {
+        if (current_vertex == start_vertex &&
+            vertex_count > 0) {
+            return vertex_count >= 3
+                ? vertex_count
+                : 0;
+        }
+
+        if (vertex_count >= edge_count) {
+            return 0;
+        }
+
+        vertices[vertex_count].x =
+            level->vertices[current_vertex].x;
+
+        vertices[vertex_count].z =
+            level->vertices[current_vertex].z;
+
+        vertex_count++;
+
+        int next_edge = -1;
+
+        for (int i = 0; i < edge_count; i++) {
+            if (edges[i].used) {
+                continue;
+            }
+
+            if (edges[i].vertex_start == current_vertex) {
+                next_edge = i;
+                break;
+            }
+        }
+
+        if (next_edge == -1) {
+            return 0;
+        }
+
+        edges[next_edge].used = true;
+        current_vertex = edges[next_edge].vertex_end;
+    }
+
+    return 0;
+}
+
+
+static bool renderer_build_sector_floor(
+    Player *player,
+    Level *level,
+    int sector_index,
+    float screen_width,
+    float screen_height,
+    ScreenGeometry *geometry,
+    float *distance
+) {
+    Vertex sector_vertices[MAX_SECTOR_VERTICES];
+
+    int vertex_count = renderer_build_sector_boundary(
+        level,
+        sector_index,
+        sector_vertices
+    );
+
+    if (vertex_count < 3) {
+        return false;
+    }
+
+    CameraPoint camera_points[MAX_SECTOR_VERTICES];
+
+    Sector *sector = &level->sectors[sector_index];
+
+    for (int i = 0; i < vertex_count; i++) {
+
+        camera_points[i] = renderer_world_to_camera(
+            player,
+            sector_vertices[i].x,
+            sector->floor_height,
+            sector_vertices[i].z
+        );
+    }
+
+    CameraPoint clipped_points[MAX_SCREEN_GEOMETRY_POINTS];
+
+    int clipped_count = renderer_clip_polygon(
+        camera_points,
+        vertex_count,
+        clipped_points,
+        screen_width,
+        screen_height
+    );
+
+    if (clipped_count < 3) {
+        return false;
+    }
+
+    if (clipped_count > MAX_SCREEN_GEOMETRY_POINTS) {
+        return false;
+    }
+
+    geometry->polygon_count = 1;
+
+    ScreenPolygon *polygon = &geometry->polygons[0];
+
+    polygon->point_count = 0;
+
+    for (int i = 0; i < clipped_count; i++) {
+
+        ScreenPoint screen_point;
+
+        if (!renderer_project_camera_point(
+            &clipped_points[i],
+            screen_width,
+            screen_height,
+            &screen_point
+        )) {
+            return false;
+        }
+
+        polygon->points[polygon->point_count].x =
+            screen_point.x;
+
+        polygon->points[polygon->point_count].y =
+            screen_point.y;
+
+        polygon->point_count++;
+    }
+
+    float center_x = 0.0f;
+    float center_y = 0.0f;
+    float center_z = 0.0f;
+
+    for (int i = 0; i < vertex_count; i++) {
+
+        center_x += sector_vertices[i].x;
+        center_y += sector->floor_height;
+        center_z += sector_vertices[i].z;
+    }
+
+    center_x /= vertex_count;
+    center_y /= vertex_count;
+    center_z /= vertex_count;
+
+    float dx = center_x - player->x;
+    float dy = center_y - player->y;
+    float dz = center_z - player->z;
+
+    *distance = dx * dx + dy * dy + dz * dz;
+
+    return true;
+}
+
+
 static bool renderer_project_wall_section(
     Player *player,
     float x1,
@@ -599,7 +808,7 @@ static bool renderer_project_wall_section(
 
 
     int point_count =
-        renderer_clip_wall(
+        renderer_clip_polygon(
             wall_points,
             4,
             clipped_points,
@@ -982,6 +1191,44 @@ static int renderer_build_walls(
 }
 
 
+static int renderer_build_floors(
+    Player *player,
+    Level *level,
+    float screen_width,
+    float screen_height,
+    RenderObject *render_objects,
+    int start_index
+) {
+    int render_object_count = 0;
+
+    for (int i = 0; i < level->sector_count; i++) {
+
+        int object_index = start_index + render_object_count;
+
+        RenderObject *object = &render_objects[object_index];
+
+        if (!renderer_build_sector_floor(
+            player,
+            level,
+            i,
+            screen_width,
+            screen_height,
+            &object->screen_geometry,
+            &object->distance
+        )) {
+            continue;
+        }
+
+        object->type = RENDER_OBJECT_FLOOR;
+
+        render_object_count++;
+    }
+
+    return render_object_count;
+}
+
+
+
 void renderer_render(
     SDL_Renderer *renderer,
     Player *player,
@@ -999,17 +1246,19 @@ void renderer_render(
         &screen_height
     );
 
-    RenderObject *render_objects =
-        malloc(
-            sizeof(RenderObject) *
-            level->wall_count
-        );
+    int max_render_objects =
+        level->wall_count + level->sector_count * 2;
 
-    if (!render_objects) {
+    RenderObject *render_objects = malloc(
+        sizeof(RenderObject) * max_render_objects
+    );
+
+    if (render_objects == NULL) {
+        SDL_RenderPresent(renderer);
         return;
     }
 
-    renderer_build_walls(
+    int render_object_count = renderer_build_walls(
         player,
         level,
         (float)screen_width,
@@ -1017,32 +1266,31 @@ void renderer_render(
         render_objects
     );
 
-    int render_wall_count =
-    renderer_build_walls(
+    int floor_count = renderer_build_floors(
         player,
         level,
         (float)screen_width,
         (float)screen_height,
-        render_objects
+        render_objects,
+        render_object_count
     );
+
+    render_object_count += floor_count;
 
     for (
         int i = 0;
-        i < render_wall_count - 1;
+        i < render_object_count - 1;
         i++
     ) {
-
         for (
             int j = i + 1;
-            j < render_wall_count;
+            j < render_object_count;
             j++
         ) {
-
             if (
                 render_objects[j].distance >
                 render_objects[i].distance
             ) {
-
                 RenderObject temporary =
                     render_objects[i];
 
@@ -1056,16 +1304,13 @@ void renderer_render(
     }
 
     for (
-        int wall_index = 0;
-        wall_index < render_wall_count;
-        wall_index++
+        int object_index = 0;
+        object_index < render_object_count;
+        object_index++
     ) {
-
         renderer_draw_screen_wall(
             renderer,
-            &render_objects[
-                wall_index
-            ].screen_geometry
+            &render_objects[object_index].screen_geometry
         );
     }
 
