@@ -4,6 +4,7 @@
 #include "../player.h"
 #include "../level.h"
 
+#include <stdbool.h>
 #include <SDL3/SDL.h>
 
 void render_walls_draw_solid(
