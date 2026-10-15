@@ -1,8 +1,8 @@
 #ifndef RENDERER_H
 #define RENDERER_H
 
-#include "player.h"
-#include "level.h"
+#include "../player.h"
+#include "../level.h"
 
 #include <stdbool.h>
 #include <SDL3/SDL.h>

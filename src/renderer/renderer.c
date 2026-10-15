@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "render_walls.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -1234,87 +1235,30 @@ void renderer_render(
     Player *player,
     Level *level
 ) {
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_SetRenderDrawColor(
+        renderer, 20, 20, 28, 255
+    );
     SDL_RenderClear(renderer);
 
     int screen_width;
     int screen_height;
 
-    SDL_GetRenderOutputSize(
+    if (!SDL_GetRenderOutputSize(
         renderer,
         &screen_width,
         &screen_height
-    );
-
-    int max_render_objects =
-        level->wall_count + level->sector_count * 2;
-
-    RenderObject *render_objects = malloc(
-        sizeof(RenderObject) * max_render_objects
-    );
-
-    if (render_objects == NULL) {
+    )) {
         SDL_RenderPresent(renderer);
         return;
     }
 
-    int render_object_count = renderer_build_walls(
+    render_walls_draw_solid(
+        renderer,
         player,
         level,
-        (float)screen_width,
-        (float)screen_height,
-        render_objects
+        screen_width,
+        screen_height
     );
-
-    int floor_count = renderer_build_floors(
-        player,
-        level,
-        (float)screen_width,
-        (float)screen_height,
-        render_objects,
-        render_object_count
-    );
-
-    render_object_count += floor_count;
-
-    for (
-        int i = 0;
-        i < render_object_count - 1;
-        i++
-    ) {
-        for (
-            int j = i + 1;
-            j < render_object_count;
-            j++
-        ) {
-            if (
-                render_objects[j].distance >
-                render_objects[i].distance
-            ) {
-                RenderObject temporary =
-                    render_objects[i];
-
-                render_objects[i] =
-                    render_objects[j];
-
-                render_objects[j] =
-                    temporary;
-            }
-        }
-    }
-
-    for (
-        int object_index = 0;
-        object_index < render_object_count;
-        object_index++
-    ) {
-        renderer_draw_screen_wall(
-            renderer,
-            &render_objects[object_index].screen_geometry
-        );
-    }
-
-    free(render_objects);
 
     SDL_RenderPresent(renderer);
 }

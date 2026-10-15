@@ -10,8 +10,12 @@ add_executable(GameEngine
     src/game.c
     src/player.c
     src/input.c
-    src/renderer.c
     src/level.c
+    src/renderer/render_camera.c
+    src/renderer/renderer.c
+    src/renderer/render_planes.c
+    src/renderer/render_visibility.c
+    src/renderer/render_walls.c
 )
 
 target_include_directories(GameEngine PRIVATE

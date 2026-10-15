@@ -1,5 +1,5 @@
 #include "game.h"
-#include "renderer.h"
+#include "renderer/renderer.h"
 
 #include <stdio.h>
 #include <SDL3/SDL.h>
