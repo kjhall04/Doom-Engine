@@ -1,6 +1,5 @@
 #include "render_walls.h"
 #include "render_camera.h"
-#include "render_visibility.h"
 
 #include <SDL3/SDL_timer.h>
 
@@ -33,258 +32,25 @@ typedef struct ScreenVertex {
 typedef struct WallRenderBuffers {
     SDL_Renderer *renderer;
     SDL_Texture *texture;
+
     uint32_t *pixels;
     float *depth;
+
     int width;
     int height;
+
+    int *clip_top;
+    int *clip_bottom;
 } WallRenderBuffers;
 
 static WallRenderBuffers buffers = {0};
 
-/*
- * Horizontal clipping window.
- *
- * Both bounds are inclusive.
- */
 typedef struct WallClipRange {
     int left;
     int right;
 } WallClipRange;
 
 static WallClipRange wall_clip_range = {0, 0};
-
-/*
- * Allow drawing across the entire screen.
- */
-static void wall_clip_reset(int screen_width) {
-    wall_clip_range.left = 0;
-    wall_clip_range.right = screen_width - 1;
-}
-
-/*
- * Restrict drawing to a horizontal screen range.
- */
-static void wall_clip_set(int left, int right) {
-    if (left < 0) {
-        left = 0;
-    }
-
-    if (right >= buffers.width) {
-        right = buffers.width - 1;
-    }
-
-    wall_clip_range.left = left;
-    wall_clip_range.right = right;
-}
-
-/*
- * Find the horizontal screen range occupied by a portal.
- *
- * Returns false if the portal is entirely behind the
- * camera or outside the current clipping window.
- */
-static bool wall_portal_screen_range(
-    const Player *player,
-    const Vertex *start,
-    const Vertex *end,
-    int *out_left,
-    int *out_right
-) {
-    /*
-    * Horizontal portal projection is currently
-    * designed for a level camera.
-    *
-    * With pitch, use the parent's full clipping range
-    * until we implement projected portal polygons.
-    */
-    if (fabsf(player->pitch) > 0.001f) {
-        *out_left = wall_clip_range.left;
-        *out_right = wall_clip_range.right;
-        return true;
-    }
-
-    RenderCameraPoint a = render_camera_transform(
-        player, start->x, 0.0f, start->z
-    );
-
-    RenderCameraPoint b = render_camera_transform(
-        player, end->x, 0.0f, end->z
-    );
-
-    /*
-     * The horizontal projection does not depend on
-     * the wall's world height, but camera pitch can
-     * change the camera space depth.
-     *
-     * To remain conservative when looking up or down,
-     * this first version uses a horizontal yaw projection.
-     */
-    float dx_a = start->x - player->x;
-    float dz_a = start->z - player->z;
-
-    float dx_b = end->x - player->x;
-    float dz_b = end->z - player->z;
-
-    float sin_yaw = sinf(player->yaw);
-    float cos_yaw = cosf(player->yaw);
-
-    a.x = dx_a * cos_yaw + dz_a * sin_yaw;
-    a.z = dx_a * sin_yaw - dz_a * cos_yaw;
-
-    b.x = dx_b * cos_yaw + dz_b * sin_yaw;
-    b.z = dx_b * sin_yaw - dz_b * cos_yaw;
-
-    if (a.z < WALL_NEAR_PLANE &&
-        b.z < WALL_NEAR_PLANE) {
-        return false;
-    }
-
-    /*
-     * Clip one endpoint if it lies behind the near plane.
-     */
-    if (a.z < WALL_NEAR_PLANE) {
-        float t = (WALL_NEAR_PLANE - a.z) /
-                  (b.z - a.z);
-
-        a.x += t * (b.x - a.x);
-        a.z = WALL_NEAR_PLANE;
-    }
-    else if (b.z < WALL_NEAR_PLANE) {
-        float t = (WALL_NEAR_PLANE - b.z) /
-                  (a.z - b.z);
-
-        b.x += t * (a.x - b.x);
-        b.z = WALL_NEAR_PLANE;
-    }
-
-    float focal_length =
-        (buffers.width * 0.5f) /
-        tanf((WALL_FOV * 0.5f) *
-             (WALL_PI / 180.0f));
-
-    float center_x = buffers.width * 0.5f;
-
-    float screen_a =
-        center_x + a.x * focal_length / a.z;
-
-    float screen_b =
-        center_x + b.x * focal_length / b.z;
-
-    if (!isfinite(screen_a) ||
-        !isfinite(screen_b)) {
-        return false;
-    }
-
-    float min_x = fminf(screen_a, screen_b);
-    float max_x = fmaxf(screen_a, screen_b);
-
-    /*
-     * Reject completely offscreen portals before
-     * converting to integer coordinates.
-     */
-    if (max_x < (float)wall_clip_range.left ||
-        min_x > (float)wall_clip_range.right) {
-        return false;
-    }
-
-    min_x = fmaxf(
-        min_x, (float)wall_clip_range.left
-    );
-
-    max_x = fminf(
-        max_x, (float)wall_clip_range.right
-    );
-
-    *out_left = (int)floorf(min_x);
-    *out_right = (int)ceilf(max_x);
-
-    return *out_left <= *out_right;
-}
-
-static void wall_release_buffers(void) {
-    if (buffers.texture != NULL) {
-        SDL_DestroyTexture(buffers.texture);
-    }
-
-    free(buffers.pixels);
-    free(buffers.depth);
-
-    buffers.texture = NULL;
-    buffers.pixels = NULL;
-    buffers.depth = NULL;
-    buffers.width = 0;
-    buffers.height = 0;
-    buffers.renderer = NULL;
-}
-
-static bool wall_prepare_buffers(
-    SDL_Renderer *renderer,
-    int width,
-    int height
-) {
-    if (buffers.renderer == renderer &&
-        buffers.width == width &&
-        buffers.height == height &&
-        buffers.texture != NULL &&
-        buffers.pixels != NULL &&
-        buffers.depth != NULL) {
-        return true;
-    }
-
-    wall_release_buffers();
-
-    size_t w = (size_t)width;
-    size_t h = (size_t)height;
-
-    if (w > SIZE_MAX / h / sizeof(uint32_t) ||
-        w > SIZE_MAX / h / sizeof(float)) {
-        return false;
-    }
-
-    size_t count = w * h;
-
-    uint32_t *pixels = malloc(count * sizeof(uint32_t));
-    float *depth = malloc(count * sizeof(float));
-
-    if (pixels == NULL || depth == NULL) {
-        free(pixels);
-        free(depth);
-        return false;
-    }
-
-    SDL_Texture *texture = SDL_CreateTexture(
-        renderer,
-        SDL_PIXELFORMAT_ARGB8888,
-        SDL_TEXTUREACCESS_STREAMING,
-        width,
-        height
-    );
-
-    if (texture == NULL) {
-        free(pixels);
-        free(depth);
-        return false;
-    }
-
-    if (!SDL_SetTextureScaleMode(
-        texture,
-        SDL_SCALEMODE_NEAREST
-    )) {
-        SDL_DestroyTexture(texture);
-        free(pixels);
-        free(depth);
-        return false;
-    }
-
-    buffers.renderer = renderer;
-    buffers.texture = texture;
-    buffers.pixels = pixels;
-    buffers.depth = depth;
-    buffers.width = width;
-    buffers.height = height;
-
-    return true;
-}
 
 static int wall_clip_polygon(
     const WallVertex *input,
@@ -321,6 +87,359 @@ static int wall_clip_polygon(
 
     return output_count;
 }
+
+static void wall_clip_reset(int screen_width) {
+    wall_clip_range.left = 0;
+    wall_clip_range.right = screen_width - 1;
+}
+
+static void wall_clip_vertical_reset(void) {
+    for (int x = 0; x < buffers.width; x++) {
+        buffers.clip_top[x] = 0;
+        buffers.clip_bottom[x] = buffers.height - 1;
+    }
+}
+
+static void wall_clip_set(int left, int right) {
+    if (left < 0) {
+        left = 0;
+    }
+
+    if (right >= buffers.width) {
+        right = buffers.width - 1;
+    }
+
+    wall_clip_range.left = left;
+    wall_clip_range.right = right;
+}
+
+/*
+ * Restrict the current clipping window to the
+ * projected opening of a portal.
+ *
+ * Returns true if at least one screen column
+ * remains visible.
+ *
+ * The caller must save and restore the clipping
+ * arrays around recursive sector rendering.
+ */
+static bool wall_portal_apply_clip(
+    const Player *player,
+    const Vertex *start,
+    const Vertex *end,
+    float opening_bottom,
+    float opening_top
+) {
+    if (opening_top <= opening_bottom) {
+        return false;
+    }
+
+    /*
+     * Near a portal crossing, its projected polygon can collapse
+     * as the camera moves through its plane. Keep the parent's
+     * clipping window during that brief transition.
+     *
+     * Check proximity to the finite wall segment, not just the
+     * infinite line containing it, to avoid bypassing unrelated
+     * portals elsewhere on the same line.
+     */
+    const float crossing_distance = 0.2f;
+    float wall_dx = end->x - start->x;
+    float wall_dz = end->z - start->z;
+    float wall_length_squared = wall_dx * wall_dx + wall_dz * wall_dz;
+
+    if (wall_length_squared > 0.00000001f) {
+        float player_dx = player->x - start->x;
+        float player_dz = player->z - start->z;
+        float along = (player_dx * wall_dx + player_dz * wall_dz) /
+                      wall_length_squared;
+        float inverse_length = 1.0f / sqrtf(wall_length_squared);
+        float signed_distance = (wall_dx * player_dz - wall_dz * player_dx) *
+                                inverse_length;
+        float margin = crossing_distance * inverse_length;
+
+        if (fabsf(signed_distance) < crossing_distance &&
+            along >= -margin && along <= 1.0f + margin) {
+            return true;
+        }
+    }
+
+    RenderCameraPoint a = render_camera_transform(
+        player, start->x, opening_bottom, start->z
+    );
+
+    RenderCameraPoint b = render_camera_transform(
+        player, end->x, opening_bottom, end->z
+    );
+
+    RenderCameraPoint c = render_camera_transform(
+        player, end->x, opening_top, end->z
+    );
+
+    RenderCameraPoint d = render_camera_transform(
+        player, start->x, opening_top, start->z
+    );
+
+    WallVertex polygon[WALL_MAX_VERTICES] = {
+        { a.x, a.y, a.z },
+        { b.x, b.y, b.z },
+        { c.x, c.y, c.z },
+        { d.x, d.y, d.z }
+    };
+
+    /*
+     * Clip the portal against the near plane.
+     */
+    WallVertex clipped[WALL_MAX_VERTICES];
+
+    int count = wall_clip_polygon(
+        polygon,
+        4,
+        clipped
+    );
+
+    if (count < 3) {
+        return false;
+    }
+
+    float focal_length =
+        (buffers.width * 0.5f) /
+        tanf((WALL_FOV * 0.5f) *
+             (WALL_PI / 180.0f));
+
+    float center_x = buffers.width * 0.5f;
+    float center_y = buffers.height * 0.5f;
+
+    ScreenVertex projected[WALL_MAX_VERTICES];
+
+    float min_x = INFINITY;
+    float max_x = -INFINITY;
+
+    for (int i = 0; i < count; i++) {
+        float z = clipped[i].z;
+
+        if (z < WALL_NEAR_PLANE) {
+            return false;
+        }
+
+        projected[i].x =
+            center_x + clipped[i].x * focal_length / z;
+
+        projected[i].y =
+            center_y - clipped[i].y * focal_length / z;
+
+        if (!isfinite(projected[i].x) ||
+            !isfinite(projected[i].y)) {
+            return false;
+        }
+
+        min_x = fminf(min_x, projected[i].x);
+        max_x = fmaxf(max_x, projected[i].x);
+    }
+
+    if (max_x < wall_clip_range.left ||
+        min_x > wall_clip_range.right) {
+        return false;
+    }
+
+    float left_f = fmaxf(
+        floorf(min_x) - 1.0f,
+        (float)wall_clip_range.left
+    );
+
+    float right_f = fminf(
+        ceilf(max_x) + 1.0f,
+        (float)wall_clip_range.right
+    );
+
+    int left = (int)left_f;
+    int right = (int)right_f;
+
+    if (left > right) {
+        return false;
+    }
+
+    bool any_visible = false;
+    int visible_left = right;
+    int visible_right = left;
+
+    for (int x = left; x <= right; x++) {
+        float sample_x = (float)x + 0.5f;
+
+        float top = INFINITY;
+        float bottom = -INFINITY;
+
+        int intersections = 0;
+
+        for (int i = 0; i < count; i++) {
+            const ScreenVertex *p = &projected[i];
+            const ScreenVertex *q =
+                &projected[(i + 1) % count];
+
+            float edge_min_x = fminf(p->x, q->x);
+            float edge_max_x = fmaxf(p->x, q->x);
+
+            if (sample_x < edge_min_x ||
+                sample_x > edge_max_x) {
+                continue;
+            }
+
+            float dx = q->x - p->x;
+
+            if (fabsf(dx) < 0.00001f) {
+                top = fminf(top, fminf(p->y, q->y));
+                bottom = fmaxf(bottom, fmaxf(p->y, q->y));
+                intersections++;
+                continue;
+            }
+
+            float t = (sample_x - p->x) / dx;
+
+            float y = p->y + t * (q->y - p->y);
+
+            top = fminf(top, y);
+            bottom = fmaxf(bottom, y);
+
+            intersections++;
+        }
+
+        if (intersections == 0) {
+            buffers.clip_top[x] = 1;
+            buffers.clip_bottom[x] = 0;
+            continue;
+        }
+
+        float top_f = fmaxf(
+            floorf(top) - 1.0f,
+            0.0f
+        );
+
+        float bottom_f = fminf(
+            ceilf(bottom) + 1.0f,
+            (float)(buffers.height - 1)
+        );
+
+        int portal_top = (int)top_f;
+        int portal_bottom = (int)bottom_f;
+
+        if (portal_top > buffers.clip_top[x]) {
+            buffers.clip_top[x] = portal_top;
+        }
+
+        if (portal_bottom < buffers.clip_bottom[x]) {
+            buffers.clip_bottom[x] = portal_bottom;
+        }
+
+        if (buffers.clip_top[x] <= buffers.clip_bottom[x]) {
+            any_visible = true;
+
+            if (x < visible_left) visible_left = x;
+            if (x > visible_right) visible_right = x;
+        }
+    }
+
+    if (!any_visible) {
+        return false;
+    }
+
+    wall_clip_set(visible_left, visible_right);
+
+    return true;
+}
+
+static void wall_release_buffers(void) {
+    if (buffers.texture != NULL) {
+        SDL_DestroyTexture(buffers.texture);
+    }
+
+    free(buffers.pixels);
+    free(buffers.depth);
+
+    free(buffers.clip_top);
+    free(buffers.clip_bottom);
+
+    buffers.clip_top = NULL;
+    buffers.clip_bottom = NULL;
+    buffers.texture = NULL;
+    buffers.pixels = NULL;
+    buffers.depth = NULL;
+    buffers.width = 0;
+    buffers.height = 0;
+    buffers.renderer = NULL;
+}
+
+static bool wall_prepare_buffers(
+    SDL_Renderer *renderer,
+    int width,
+    int height
+) {
+    if (buffers.renderer == renderer &&
+        buffers.width == width &&
+        buffers.height == height &&
+        buffers.texture != NULL &&
+        buffers.pixels != NULL &&
+        buffers.depth != NULL &&
+        buffers.clip_top != NULL &&
+        buffers.clip_bottom != NULL) {
+        return true;
+    }
+
+    wall_release_buffers();
+
+    size_t w = (size_t)width;
+    size_t h = (size_t)height;
+
+    if (w > SIZE_MAX / h / sizeof(uint32_t) ||
+        w > SIZE_MAX / h / sizeof(float) ||
+        w > SIZE_MAX / sizeof(*buffers.clip_top) ||
+        w > SIZE_MAX / sizeof(*buffers.clip_bottom)) {
+        return false;
+    }
+
+    size_t count = w * h;
+
+    buffers.pixels = malloc(count * sizeof(*buffers.pixels));
+    buffers.depth = malloc(count * sizeof(*buffers.depth));
+    buffers.clip_top = malloc(w * sizeof(*buffers.clip_top));
+    buffers.clip_bottom = malloc(w * sizeof(*buffers.clip_bottom));
+
+    if (buffers.pixels == NULL ||
+        buffers.depth == NULL ||
+        buffers.clip_top == NULL ||
+        buffers.clip_bottom == NULL) {
+        wall_release_buffers();
+        return false;
+    }
+
+    buffers.texture = SDL_CreateTexture(
+        renderer,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        width,
+        height
+    );
+
+    if (buffers.texture == NULL) {
+        wall_release_buffers();
+        return false;
+    }
+
+    if (!SDL_SetTextureScaleMode(
+        buffers.texture,
+        SDL_SCALEMODE_NEAREST
+    )) {
+        wall_release_buffers();
+        return false;
+    }
+
+    buffers.renderer = renderer;
+    buffers.width = width;
+    buffers.height = height;
+
+    return true;
+}
+
+
 
 static float wall_edge(
     const ScreenVertex *a,
@@ -370,10 +489,6 @@ static void wall_rasterize_triangle(
     int first_y = (int)floorf(min_y);
     int last_y = (int)ceilf(max_y);
 
-    /*
-    * Intersect the triangle's horizontal bounds
-    * with the current clipping window.
-    */
     if (first_x < wall_clip_range.left) {
         first_x = wall_clip_range.left;
     }
@@ -382,9 +497,6 @@ static void wall_rasterize_triangle(
         last_x = wall_clip_range.right;
     }
 
-    /*
-    * Nothing remains inside the clipping window.
-    */
     if (first_x > last_x) {
         return;
     }
@@ -426,21 +538,25 @@ static void wall_rasterize_triangle(
             float w1 = edge_w1 * inverse_area;
             float w2 = edge_w2 * inverse_area;
 
-            if (w0 >= epsilon && w1 >= epsilon && w2 >= epsilon) {
-                float inverse_z =
-                    w0 * a->inverse_z +
-                    w1 * b->inverse_z +
-                    w2 * c->inverse_z;
+            /* Keep edge increments running even for clipped pixels. */
+            if (y >= buffers.clip_top[x] &&
+                y <= buffers.clip_bottom[x]) {
+                if (w0 >= epsilon && w1 >= epsilon && w2 >= epsilon) {
+                    float inverse_z =
+                        w0 * a->inverse_z +
+                        w1 * b->inverse_z +
+                        w2 * c->inverse_z;
 
-                /*
-                 * Store inverse depth. Larger values are closer to the
-                 * camera, so this avoids a reciprocal for every covered
-                 * pixel while preserving the depth test result.
-                 */
-                if (inverse_z > 0.0f && isfinite(inverse_z) &&
-                    inverse_z > buffers.depth[index]) {
-                    buffers.depth[index] = inverse_z;
-                    buffers.pixels[index] = COLOR_WALL;
+                    /*
+                     * Store inverse depth. Larger values are closer to the
+                     * camera, so this avoids a reciprocal for every covered
+                     * pixel while preserving the depth test result.
+                     */
+                    if (inverse_z > 0.0f && isfinite(inverse_z) &&
+                        inverse_z > buffers.depth[index]) {
+                        buffers.depth[index] = inverse_z;
+                        buffers.pixels[index] = COLOR_WALL;
+                    }
                 }
             }
 
@@ -456,15 +572,6 @@ static void wall_rasterize_triangle(
     }
 }
 
-/*
- * Draw a rectangular section of a wall between
- * two world heights.
- *
- * This works for:
- *   1. Solid walls
- *   2. Lower portal walls
- *   3. Upper portal walls
- */
 static void wall_draw_section(
     const Player *player,
     const Vertex *start,
@@ -555,10 +662,6 @@ static void wall_draw_section(
         }
     }
 
-    /*
-     * Convert the clipped polygon into triangles.
-     * The optimized rasterizer remains unchanged.
-     */
     for (int i = 1; i < count - 1; i++) {
         wall_rasterize_triangle(
             &projected[0],
@@ -568,10 +671,6 @@ static void wall_draw_section(
     }
 }
 
-
-/*
- * Decide which sections of the wall need drawing.
- */
 static void wall_draw_segment(
     const Player *player,
     const Wall *wall,
@@ -595,9 +694,6 @@ static void wall_draw_segment(
     const Sector *front =
         &level->sectors[wall->front_sector];
 
-    /*
-     * A wall without a back sector is solid.
-     */
     if (wall->back_sector < 0) {
         wall_draw_section(
             player,
@@ -610,9 +706,6 @@ static void wall_draw_segment(
         return;
     }
 
-    /*
-     * Reject invalid back sector references.
-     */
     if (wall->back_sector >= level->sector_count) {
         return;
     }
@@ -620,10 +713,6 @@ static void wall_draw_segment(
     const Sector *back =
         &level->sectors[wall->back_sector];
 
-    /*
-     * The lower wall occupies the space below
-     * the higher of the two floors.
-     */
     float lower_bottom = fminf(
         front->floor_height,
         back->floor_height
@@ -634,10 +723,6 @@ static void wall_draw_segment(
         back->floor_height
     );
 
-    /*
-     * The upper wall occupies the space above
-     * the lower of the two ceilings.
-     */
     float upper_bottom = fminf(
         front->ceiling_height,
         back->ceiling_height
@@ -648,10 +733,6 @@ static void wall_draw_segment(
         back->ceiling_height
     );
 
-    /*
-     * The portal opening is the intersection
-     * of both sectors' vertical spaces.
-     */
     float opening_bottom = fmaxf(
         front->floor_height,
         back->floor_height
@@ -662,10 +743,6 @@ static void wall_draw_segment(
         back->ceiling_height
     );
 
-    /*
-     * If the sectors have no vertical overlap,
-     * the shared boundary is completely solid.
-     */
     if (opening_bottom >= opening_top) {
         wall_draw_section(
             player,
@@ -684,9 +761,6 @@ static void wall_draw_segment(
         return;
     }
 
-    /*
-     * Draw the lower wall if floor heights differ.
-     */
     wall_draw_section(
         player,
         start,
@@ -695,9 +769,6 @@ static void wall_draw_segment(
         lower_top
     );
 
-    /*
-     * Draw the upper wall if ceiling heights differ.
-     */
     wall_draw_section(
         player,
         start,
@@ -707,12 +778,6 @@ static void wall_draw_segment(
     );
 }
 
-/*
- * Render one sector and follow its visible portals.
- *
- * active_path prevents infinite loops when sectors
- * connect back to one another.
- */
 static void wall_render_sector(
     const Player *player,
     const Level *level,
@@ -730,9 +795,6 @@ static void wall_render_sector(
 
     active_path[sector_index] = true;
 
-    /*
-     * First draw wall sections belonging to this sector.
-     */
     for (int i = 0; i < level->wall_count; i++) {
         const Wall *wall = &level->walls[i];
 
@@ -748,9 +810,6 @@ static void wall_render_sector(
         );
     }
 
-    /*
-     * Then follow portals into neighboring sectors.
-     */
     for (int i = 0; i < level->wall_count; i++) {
         const Wall *wall = &level->walls[i];
 
@@ -776,9 +835,6 @@ static void wall_render_sector(
             continue;
         }
 
-        /*
-         * A portal must have an actual vertical opening.
-         */
         const Sector *current =
             &level->sectors[sector_index];
 
@@ -805,52 +861,87 @@ static void wall_render_sector(
         const Vertex *end =
             &level->vertices[wall->vertex_end];
 
-        int portal_left;
-        int portal_right;
+        WallClipRange previous_clip = wall_clip_range;
 
-        if (!wall_portal_screen_range(
-            player,
-            start,
-            end,
-            &portal_left,
-            &portal_right
-        )) {
+        int saved_left = wall_clip_range.left;
+        int saved_right = wall_clip_range.right;
+
+        size_t column_count =
+            (size_t)(saved_right - saved_left + 1);
+
+        if (column_count > SIZE_MAX / sizeof(int)) {
             continue;
         }
 
-        /*
-         * Save the parent's clipping window.
-         */
-        WallClipRange previous_clip =
-            wall_clip_range;
-
-        /*
-         * Restrict the neighboring sector to the
-         * portion visible through this portal.
-         */
-        wall_clip_set(
-            portal_left,
-            portal_right
+        int *saved_top = malloc(
+            column_count * sizeof(*saved_top)
         );
 
-        wall_render_sector(
+        int *saved_bottom = malloc(
+            column_count * sizeof(*saved_bottom)
+        );
+
+        if (saved_top == NULL || saved_bottom == NULL) {
+            free(saved_top);
+            free(saved_bottom);
+            continue;
+        }
+
+        memcpy(
+            saved_top,
+            buffers.clip_top + saved_left,
+            column_count * sizeof(*saved_top)
+        );
+
+        memcpy(
+            saved_bottom,
+            buffers.clip_bottom + saved_left,
+            column_count * sizeof(*saved_bottom)
+        );
+
+        bool portal_visible = wall_portal_apply_clip(
             player,
-            level,
-            neighbor,
-            active_path,
-            depth + 1
+            start,
+            end,
+            opening_bottom,
+            opening_top
         );
 
+        if (portal_visible) {
+            
+            wall_render_sector(
+                player,
+                level,
+                neighbor,
+                active_path,
+                depth + 1
+            );
+        }
+
         /*
-         * Restore the parent's clipping window.
-         */
+        * Restore the parent sector's clipping state.
+        *
+        * This is essential because the next portal
+        * may have a completely different opening.
+        */
+        memcpy(
+            buffers.clip_top + saved_left,
+            saved_top,
+            column_count * sizeof(*saved_top)
+        );
+
+        memcpy(
+            buffers.clip_bottom + saved_left,
+            saved_bottom,
+            column_count * sizeof(*saved_bottom)
+        );
+
         wall_clip_range = previous_clip;
+
+        free(saved_top);
+        free(saved_bottom);
     }
 
-    /*
-     * This sector may be reached again through
-     * another portal path.
-     */
     active_path[sector_index] = false;
 }
 
@@ -872,16 +963,9 @@ void render_walls_draw_solid(
         return;
     }
 
-    /*
-    * Start every frame with the full screen visible.
-    */
     wall_clip_reset(screen_width);
+    wall_clip_vertical_reset();
 
-    /*
-     * Collect timing samples without logging every frame.
-     * Logging itself can affect performance, so report averages every
-     * 60 successful frames instead.
-     */
     static Uint64 clear_ticks = 0;
     static Uint64 raster_ticks = 0;
     static Uint64 upload_ticks = 0;
@@ -909,23 +993,6 @@ void render_walls_draw_solid(
 
     stage_start = SDL_GetPerformanceCounter();
 
-    /*
-    * Allocate one visibility flag per sector.
-    */
-    bool *visible_sectors = NULL;
-
-    if (level->sector_count > 0) {
-        visible_sectors = calloc(
-            (size_t)level->sector_count,
-            sizeof(*visible_sectors)
-        );
-    }
-
-    stage_start = SDL_GetPerformanceCounter();
-
-    /*
-    * Track sectors currently on the portal traversal path.
-    */
     bool *active_path = NULL;
 
     if (level->sector_count > 0) {
@@ -935,9 +1002,6 @@ void render_walls_draw_solid(
         );
     }
 
-    /*
-    * Start from the player's current sector.
-    */
     if (active_path != NULL &&
         player->sector >= 0 &&
         player->sector < level->sector_count) {
@@ -951,11 +1015,7 @@ void render_walls_draw_solid(
         );
     }
     else {
-        /*
-        * Fallback to the original drawing approach.
-        */
-        wall_clip_reset(screen_width);
-
+        
         for (int i = 0; i < level->wall_count; i++) {
             wall_draw_segment(
                 player,
