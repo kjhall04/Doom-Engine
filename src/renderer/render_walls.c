@@ -3,6 +3,7 @@
 #include "render_portals.h"
 #include "render_sector_traversal.h"
 #include "render_planes.h"
+#include "../textures/texture.h"
 
 #include <SDL3/SDL_timer.h>
 
@@ -94,6 +95,26 @@ static void wall_release_buffers(void) {
     buffers.renderer = NULL;
 }
 
+
+static Texture wall_texture = {0};
+static bool wall_texture_initialized = false;
+
+static void wall_initialize_texture(void) {
+    if (wall_texture_initialized) {
+        return;
+    }
+
+    wall_texture_initialized = true;
+
+    if (!texture_load_bmp(
+        &wall_texture,
+        "assets/textures/brick.bmp"
+    )) {
+        SDL_Log("Using procedural wall texture fallback.");
+    }
+}
+
+
 static bool wall_prepare_buffers(
     SDL_Renderer *renderer,
     int width,
@@ -178,7 +199,7 @@ static float wall_edge(
 }
 
 
-static uint32_t wall_sample_texture(float u, float v) {
+static uint32_t wall_sample_procedural(float u, float v) {
     /*
      * One texture repeat per world unit.
      * Each repeat contains a 4 x 4 brick pattern.
@@ -204,6 +225,15 @@ static uint32_t wall_sample_texture(float u, float v) {
     return (brick & 1)
         ? 0xFF93665Au
         : 0xFFB27B65u;
+}
+
+
+static uint32_t wall_sample_texture(float u, float v) {
+    if (wall_texture.pixels) {
+        return texture_sample(&wall_texture, u, v);
+    }
+
+    return wall_sample_procedural(u, v);
 }
 
 
@@ -628,6 +658,8 @@ void render_walls_draw_solid(
     int screen_width,
     int screen_height
 ) {
+    wall_initialize_texture();
+
     if (renderer == NULL || player == NULL || level == NULL ||
         screen_width <= 0 || screen_height <= 0 ||
         level->vertices == NULL || level->walls == NULL ||
