@@ -1,5 +1,8 @@
 #include "render_walls.h"
 #include "render_camera.h"
+#include "render_portals.h"
+#include "render_sector_traversal.h"
+#include "render_planes.h"
 
 #include <SDL3/SDL_timer.h>
 
@@ -17,17 +20,23 @@
 #define COLOR_BACKGROUND 0xFF1C1414u
 #define COLOR_WALL       0xFFDCDCDCu
 
-typedef struct WallVertex {
-    float x;
-    float y;
-    float z;
-} WallVertex;
-
 typedef struct ScreenVertex {
     float x;
     float y;
     float inverse_z;
+
+    float u_over_z;
+    float v_over_z;
 } ScreenVertex;
+
+typedef struct WallTextureVertex {
+    float x;
+    float y;
+    float z;
+
+    float u;
+    float v;
+} WallTextureVertex;
 
 typedef struct WallRenderBuffers {
     SDL_Renderer *renderer;
@@ -52,42 +61,6 @@ typedef struct WallClipRange {
 
 static WallClipRange wall_clip_range = {0, 0};
 
-static int wall_clip_polygon(
-    const WallVertex *input,
-    int input_count,
-    WallVertex *output
-) {
-    int output_count = 0;
-
-    for (int i = 0; i < input_count; i++) {
-        WallVertex current = input[i];
-        WallVertex next = input[(i + 1) % input_count];
-
-        bool current_inside = current.z >= WALL_NEAR_PLANE;
-        bool next_inside = next.z >= WALL_NEAR_PLANE;
-
-        if (current_inside) {
-            output[output_count++] = current;
-        }
-
-        if (current_inside != next_inside) {
-            float t =
-                (WALL_NEAR_PLANE - current.z) /
-                (next.z - current.z);
-
-            WallVertex intersection = {
-                current.x + (next.x - current.x) * t,
-                current.y + (next.y - current.y) * t,
-                WALL_NEAR_PLANE
-            };
-
-            output[output_count++] = intersection;
-        }
-    }
-
-    return output_count;
-}
-
 static void wall_clip_reset(int screen_width) {
     wall_clip_range.left = 0;
     wall_clip_range.right = screen_width - 1;
@@ -98,253 +71,6 @@ static void wall_clip_vertical_reset(void) {
         buffers.clip_top[x] = 0;
         buffers.clip_bottom[x] = buffers.height - 1;
     }
-}
-
-static void wall_clip_set(int left, int right) {
-    if (left < 0) {
-        left = 0;
-    }
-
-    if (right >= buffers.width) {
-        right = buffers.width - 1;
-    }
-
-    wall_clip_range.left = left;
-    wall_clip_range.right = right;
-}
-
-/*
- * Restrict the current clipping window to the
- * projected opening of a portal.
- *
- * Returns true if at least one screen column
- * remains visible.
- *
- * The caller must save and restore the clipping
- * arrays around recursive sector rendering.
- */
-static bool wall_portal_apply_clip(
-    const Player *player,
-    const Vertex *start,
-    const Vertex *end,
-    float opening_bottom,
-    float opening_top
-) {
-    if (opening_top <= opening_bottom) {
-        return false;
-    }
-
-    /*
-     * Near a portal crossing, its projected polygon can collapse
-     * as the camera moves through its plane. Keep the parent's
-     * clipping window during that brief transition.
-     *
-     * Check proximity to the finite wall segment, not just the
-     * infinite line containing it, to avoid bypassing unrelated
-     * portals elsewhere on the same line.
-     */
-    const float crossing_distance = 0.2f;
-    float wall_dx = end->x - start->x;
-    float wall_dz = end->z - start->z;
-    float wall_length_squared = wall_dx * wall_dx + wall_dz * wall_dz;
-
-    if (wall_length_squared > 0.00000001f) {
-        float player_dx = player->x - start->x;
-        float player_dz = player->z - start->z;
-        float along = (player_dx * wall_dx + player_dz * wall_dz) /
-                      wall_length_squared;
-        float inverse_length = 1.0f / sqrtf(wall_length_squared);
-        float signed_distance = (wall_dx * player_dz - wall_dz * player_dx) *
-                                inverse_length;
-        float margin = crossing_distance * inverse_length;
-
-        if (fabsf(signed_distance) < crossing_distance &&
-            along >= -margin && along <= 1.0f + margin) {
-            return true;
-        }
-    }
-
-    RenderCameraPoint a = render_camera_transform(
-        player, start->x, opening_bottom, start->z
-    );
-
-    RenderCameraPoint b = render_camera_transform(
-        player, end->x, opening_bottom, end->z
-    );
-
-    RenderCameraPoint c = render_camera_transform(
-        player, end->x, opening_top, end->z
-    );
-
-    RenderCameraPoint d = render_camera_transform(
-        player, start->x, opening_top, start->z
-    );
-
-    WallVertex polygon[WALL_MAX_VERTICES] = {
-        { a.x, a.y, a.z },
-        { b.x, b.y, b.z },
-        { c.x, c.y, c.z },
-        { d.x, d.y, d.z }
-    };
-
-    /*
-     * Clip the portal against the near plane.
-     */
-    WallVertex clipped[WALL_MAX_VERTICES];
-
-    int count = wall_clip_polygon(
-        polygon,
-        4,
-        clipped
-    );
-
-    if (count < 3) {
-        return false;
-    }
-
-    float focal_length =
-        (buffers.width * 0.5f) /
-        tanf((WALL_FOV * 0.5f) *
-             (WALL_PI / 180.0f));
-
-    float center_x = buffers.width * 0.5f;
-    float center_y = buffers.height * 0.5f;
-
-    ScreenVertex projected[WALL_MAX_VERTICES];
-
-    float min_x = INFINITY;
-    float max_x = -INFINITY;
-
-    for (int i = 0; i < count; i++) {
-        float z = clipped[i].z;
-
-        if (z < WALL_NEAR_PLANE) {
-            return false;
-        }
-
-        projected[i].x =
-            center_x + clipped[i].x * focal_length / z;
-
-        projected[i].y =
-            center_y - clipped[i].y * focal_length / z;
-
-        if (!isfinite(projected[i].x) ||
-            !isfinite(projected[i].y)) {
-            return false;
-        }
-
-        min_x = fminf(min_x, projected[i].x);
-        max_x = fmaxf(max_x, projected[i].x);
-    }
-
-    if (max_x < wall_clip_range.left ||
-        min_x > wall_clip_range.right) {
-        return false;
-    }
-
-    float left_f = fmaxf(
-        floorf(min_x) - 1.0f,
-        (float)wall_clip_range.left
-    );
-
-    float right_f = fminf(
-        ceilf(max_x) + 1.0f,
-        (float)wall_clip_range.right
-    );
-
-    int left = (int)left_f;
-    int right = (int)right_f;
-
-    if (left > right) {
-        return false;
-    }
-
-    bool any_visible = false;
-    int visible_left = right;
-    int visible_right = left;
-
-    for (int x = left; x <= right; x++) {
-        float sample_x = (float)x + 0.5f;
-
-        float top = INFINITY;
-        float bottom = -INFINITY;
-
-        int intersections = 0;
-
-        for (int i = 0; i < count; i++) {
-            const ScreenVertex *p = &projected[i];
-            const ScreenVertex *q =
-                &projected[(i + 1) % count];
-
-            float edge_min_x = fminf(p->x, q->x);
-            float edge_max_x = fmaxf(p->x, q->x);
-
-            if (sample_x < edge_min_x ||
-                sample_x > edge_max_x) {
-                continue;
-            }
-
-            float dx = q->x - p->x;
-
-            if (fabsf(dx) < 0.00001f) {
-                top = fminf(top, fminf(p->y, q->y));
-                bottom = fmaxf(bottom, fmaxf(p->y, q->y));
-                intersections++;
-                continue;
-            }
-
-            float t = (sample_x - p->x) / dx;
-
-            float y = p->y + t * (q->y - p->y);
-
-            top = fminf(top, y);
-            bottom = fmaxf(bottom, y);
-
-            intersections++;
-        }
-
-        if (intersections == 0) {
-            buffers.clip_top[x] = 1;
-            buffers.clip_bottom[x] = 0;
-            continue;
-        }
-
-        float top_f = fmaxf(
-            floorf(top) - 1.0f,
-            0.0f
-        );
-
-        float bottom_f = fminf(
-            ceilf(bottom) + 1.0f,
-            (float)(buffers.height - 1)
-        );
-
-        int portal_top = (int)top_f;
-        int portal_bottom = (int)bottom_f;
-
-        if (portal_top > buffers.clip_top[x]) {
-            buffers.clip_top[x] = portal_top;
-        }
-
-        if (portal_bottom < buffers.clip_bottom[x]) {
-            buffers.clip_bottom[x] = portal_bottom;
-        }
-
-        if (buffers.clip_top[x] <= buffers.clip_bottom[x]) {
-            any_visible = true;
-
-            if (x < visible_left) visible_left = x;
-            if (x > visible_right) visible_right = x;
-        }
-    }
-
-    if (!any_visible) {
-        return false;
-    }
-
-    wall_clip_set(visible_left, visible_right);
-
-    return true;
 }
 
 static void wall_release_buffers(void) {
@@ -451,6 +177,36 @@ static float wall_edge(
          - (b->y - a->y) * (x - a->x);
 }
 
+
+static uint32_t wall_sample_texture(float u, float v) {
+    /*
+     * One texture repeat per world unit.
+     * Each repeat contains a 4 x 4 brick pattern.
+     */
+    float wrapped_u = u - floorf(u);
+    float wrapped_v = v - floorf(v);
+
+    int row = (int)(wrapped_v * 4.0f);
+    float stagger = (row & 1) ? 0.5f : 0.0f;
+
+    float brick_u = wrapped_u * 4.0f + stagger;
+    float brick_v = wrapped_v * 4.0f;
+
+    float local_u = brick_u - floorf(brick_u);
+    float local_v = brick_v - floorf(brick_v);
+
+    if (local_u < 0.055f || local_v < 0.055f) {
+        return 0xFF29252Au;
+    }
+
+    int brick = (int)floorf(brick_u) + row * 7;
+
+    return (brick & 1)
+        ? 0xFF93665Au
+        : 0xFFB27B65u;
+}
+
+
 static void wall_rasterize_triangle(
     const ScreenVertex *a,
     const ScreenVertex *b,
@@ -554,8 +310,22 @@ static void wall_rasterize_triangle(
                      */
                     if (inverse_z > 0.0f && isfinite(inverse_z) &&
                         inverse_z > buffers.depth[index]) {
+
+                        float u_over_z =
+                            w0 * a->u_over_z +
+                            w1 * b->u_over_z +
+                            w2 * c->u_over_z;
+
+                        float v_over_z =
+                            w0 * a->v_over_z +
+                            w1 * b->v_over_z +
+                            w2 * c->v_over_z;
+
+                        float u = u_over_z / inverse_z;
+                        float v = v_over_z / inverse_z;
+
                         buffers.depth[index] = inverse_z;
-                        buffers.pixels[index] = COLOR_WALL;
+                        buffers.pixels[index] = wall_sample_texture(u, v);
                     }
                 }
             }
@@ -571,6 +341,58 @@ static void wall_rasterize_triangle(
         row_w2 += w2_step_y;
     }
 }
+
+
+static WallTextureVertex wall_texture_intersection(
+    WallTextureVertex a,
+    WallTextureVertex b
+) {
+    float t =
+        (WALL_NEAR_PLANE - a.z) / (b.z - a.z);
+
+    WallTextureVertex result = {
+        .x = a.x + (b.x - a.x) * t,
+        .y = a.y + (b.y - a.y) * t,
+        .z = WALL_NEAR_PLANE,
+        .u = a.u + (b.u - a.u) * t,
+        .v = a.v + (b.v - a.v) * t
+    };
+
+    return result;
+}
+
+static int wall_clip_textured_polygon(
+    const WallTextureVertex *input,
+    int input_count,
+    WallTextureVertex *output
+) {
+    int output_count = 0;
+
+    for (int i = 0; i < input_count; i++) {
+        WallTextureVertex a = input[i];
+        WallTextureVertex b = input[(i + 1) % input_count];
+
+        bool a_inside = a.z >= WALL_NEAR_PLANE;
+        bool b_inside = b.z >= WALL_NEAR_PLANE;
+
+        if (a_inside && b_inside) {
+            output[output_count++] = b;
+        }
+        else if (a_inside && !b_inside) {
+            output[output_count++] =
+                wall_texture_intersection(a, b);
+        }
+        else if (!a_inside && b_inside) {
+            output[output_count++] =
+                wall_texture_intersection(a, b);
+
+            output[output_count++] = b;
+        }
+    }
+
+    return output_count;
+}
+
 
 static void wall_draw_section(
     const Player *player,
@@ -611,16 +433,21 @@ static void wall_draw_section(
         start->z
     );
 
-    WallVertex polygon[WALL_MAX_VERTICES] = {
-        { a.x, a.y, a.z },
-        { b.x, b.y, b.z },
-        { c.x, c.y, c.z },
-        { d.x, d.y, d.z }
+    float wall_length = hypotf(
+        end->x - start->x,
+        end->z - start->z
+    );
+
+    WallTextureVertex polygon[WALL_MAX_VERTICES] = {
+        { a.x, a.y, a.z, 0.0f, bottom_height },
+        { b.x, b.y, b.z, wall_length, bottom_height },
+        { c.x, c.y, c.z, wall_length, top_height },
+        { d.x, d.y, d.z, 0.0f, top_height }
     };
 
-    WallVertex clipped[WALL_MAX_VERTICES];
+    WallTextureVertex clipped[WALL_MAX_VERTICES];
 
-    int count = wall_clip_polygon(
+    int count = wall_clip_textured_polygon(
         polygon,
         4,
         clipped
@@ -655,6 +482,12 @@ static void wall_draw_section(
 
         projected[i].inverse_z =
             1.0f / clipped[i].z;
+
+        projected[i].u_over_z =
+            clipped[i].u * projected[i].inverse_z;
+
+        projected[i].v_over_z =
+            clipped[i].v * projected[i].inverse_z;
 
         if (!isfinite(projected[i].x) ||
             !isfinite(projected[i].y)) {
@@ -778,171 +611,14 @@ static void wall_draw_segment(
     );
 }
 
-static void wall_render_sector(
-    const Player *player,
-    const Level *level,
-    int sector_index,
-    bool *active_path,
-    int depth
+static void wall_draw_callback(
+    const Player *player, const Wall *wall, const Level *level,
+    const RenderPortalClip *clip, void *userdata
 ) {
-    if (sector_index < 0 ||
-        sector_index >= level->sector_count ||
-        active_path[sector_index] ||
-        depth >= level->sector_count ||
-        wall_clip_range.left > wall_clip_range.right) {
-        return;
-    }
-
-    active_path[sector_index] = true;
-
-    for (int i = 0; i < level->wall_count; i++) {
-        const Wall *wall = &level->walls[i];
-
-        if (wall->front_sector != sector_index &&
-            wall->back_sector != sector_index) {
-            continue;
-        }
-
-        wall_draw_segment(
-            player,
-            wall,
-            level
-        );
-    }
-
-    for (int i = 0; i < level->wall_count; i++) {
-        const Wall *wall = &level->walls[i];
-
-        int neighbor = -1;
-
-        if (wall->front_sector == sector_index) {
-            neighbor = wall->back_sector;
-        }
-        else if (wall->back_sector == sector_index) {
-            neighbor = wall->front_sector;
-        }
-
-        if (neighbor < 0 ||
-            neighbor >= level->sector_count ||
-            active_path[neighbor]) {
-            continue;
-        }
-
-        if (wall->vertex_start < 0 ||
-            wall->vertex_start >= level->vertex_count ||
-            wall->vertex_end < 0 ||
-            wall->vertex_end >= level->vertex_count) {
-            continue;
-        }
-
-        const Sector *current =
-            &level->sectors[sector_index];
-
-        const Sector *next =
-            &level->sectors[neighbor];
-
-        float opening_bottom = fmaxf(
-            current->floor_height,
-            next->floor_height
-        );
-
-        float opening_top = fminf(
-            current->ceiling_height,
-            next->ceiling_height
-        );
-
-        if (opening_bottom >= opening_top) {
-            continue;
-        }
-
-        const Vertex *start =
-            &level->vertices[wall->vertex_start];
-
-        const Vertex *end =
-            &level->vertices[wall->vertex_end];
-
-        WallClipRange previous_clip = wall_clip_range;
-
-        int saved_left = wall_clip_range.left;
-        int saved_right = wall_clip_range.right;
-
-        size_t column_count =
-            (size_t)(saved_right - saved_left + 1);
-
-        if (column_count > SIZE_MAX / sizeof(int)) {
-            continue;
-        }
-
-        int *saved_top = malloc(
-            column_count * sizeof(*saved_top)
-        );
-
-        int *saved_bottom = malloc(
-            column_count * sizeof(*saved_bottom)
-        );
-
-        if (saved_top == NULL || saved_bottom == NULL) {
-            free(saved_top);
-            free(saved_bottom);
-            continue;
-        }
-
-        memcpy(
-            saved_top,
-            buffers.clip_top + saved_left,
-            column_count * sizeof(*saved_top)
-        );
-
-        memcpy(
-            saved_bottom,
-            buffers.clip_bottom + saved_left,
-            column_count * sizeof(*saved_bottom)
-        );
-
-        bool portal_visible = wall_portal_apply_clip(
-            player,
-            start,
-            end,
-            opening_bottom,
-            opening_top
-        );
-
-        if (portal_visible) {
-            
-            wall_render_sector(
-                player,
-                level,
-                neighbor,
-                active_path,
-                depth + 1
-            );
-        }
-
-        /*
-        * Restore the parent sector's clipping state.
-        *
-        * This is essential because the next portal
-        * may have a completely different opening.
-        */
-        memcpy(
-            buffers.clip_top + saved_left,
-            saved_top,
-            column_count * sizeof(*saved_top)
-        );
-
-        memcpy(
-            buffers.clip_bottom + saved_left,
-            saved_bottom,
-            column_count * sizeof(*saved_bottom)
-        );
-
-        wall_clip_range = previous_clip;
-
-        free(saved_top);
-        free(saved_bottom);
-    }
-
-    active_path[sector_index] = false;
+    (void)userdata;
+    wall_clip_range.left = clip->left;
+    wall_clip_range.right = clip->right;
+    wall_draw_segment(player, wall, level);
 }
 
 void render_walls_draw_solid(
@@ -988,44 +664,21 @@ void render_walls_draw_solid(
         buffers.pixels[i] = COLOR_BACKGROUND;
     }
 
+    /* Render sector floors and ceilings using shared inverse depth. */
+    render_planes_draw(player, level, buffers.pixels, buffers.depth,
+                       buffers.width, buffers.height);
+
     Uint64 stage_end = SDL_GetPerformanceCounter();
     clear_ticks += stage_end - stage_start;
 
     stage_start = SDL_GetPerformanceCounter();
 
-    bool *active_path = NULL;
-
-    if (level->sector_count > 0) {
-        active_path = calloc(
-            (size_t)level->sector_count,
-            sizeof(*active_path)
-        );
-    }
-
-    if (active_path != NULL &&
-        player->sector >= 0 &&
-        player->sector < level->sector_count) {
-
-        wall_render_sector(
-            player,
-            level,
-            player->sector,
-            active_path,
-            0
-        );
-    }
-    else {
-        
-        for (int i = 0; i < level->wall_count; i++) {
-            wall_draw_segment(
-                player,
-                &level->walls[i],
-                level
-            );
-        }
-    }
-
-    free(active_path);
+    RenderPortalClip clip = {
+        buffers.width, buffers.height,
+        wall_clip_range.left, wall_clip_range.right,
+        buffers.clip_top, buffers.clip_bottom
+    };
+    render_sector_traverse(player, level, &clip, wall_draw_callback, NULL);
 
     stage_end = SDL_GetPerformanceCounter();
     raster_ticks += stage_end - stage_start;

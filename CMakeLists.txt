@@ -16,6 +16,8 @@ add_executable(GameEngine
     src/renderer/render_planes.c
     src/renderer/render_visibility.c
     src/renderer/render_walls.c
+    src/renderer/render_portals.c
+    src/renderer/render_sector_traversal.c
 )
 
 target_include_directories(GameEngine PRIVATE
