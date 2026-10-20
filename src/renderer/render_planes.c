@@ -112,11 +112,29 @@ static uint32_t plane_sample_ceiling(float u, float v) {
         : 0xFF505066u;
 }
 
+
+static uint32_t plane_sample_texture(
+    const Texture *texture,
+    float u,
+    float v,
+    bool is_ceiling
+) {
+    if (texture != NULL) {
+        return texture_sample(texture, u, v);
+    }
+
+    return is_ceiling
+        ? plane_sample_ceiling(u, v)
+        : plane_sample_floor(u, v);
+}
+
+
 static void raster_triangle(
     PlaneScreenPoint a,
     PlaneScreenPoint b,
     PlaneScreenPoint c,
     bool is_ceiling,
+    const Texture *texture,
     uint32_t *pixels,
     float *depth,
     int width,
@@ -160,9 +178,12 @@ static void raster_triangle(
                 float u = u_over_z / iz;
                 float v = v_over_z / iz;
 
-                uint32_t color = is_ceiling
-                    ? plane_sample_ceiling(u, v)
-                    : plane_sample_floor(u, v);
+                uint32_t color = plane_sample_texture(
+                    texture,
+                    u,
+                    v,
+                    is_ceiling
+                );
 
                 depth[index] = iz;
                 pixels[index] = color;
@@ -179,6 +200,7 @@ static void draw_world_triangle(
     PlanePoint c,
     float elevation,
     bool is_ceiling,
+    const Texture *texture,
     uint32_t *pixels,
     float *depth,
     int width,
@@ -278,6 +300,7 @@ static void draw_world_triangle(
             screen[i],
             screen[i + 1],
             is_ceiling,
+            texture,
             pixels,
             depth,
             width,
@@ -286,8 +309,15 @@ static void draw_world_triangle(
     }
 }
 
-void render_planes_draw(const Player *player, const Level *level,
-                        uint32_t *pixels, float *depth, int width, int height) {
+void render_planes_draw(
+    const Player *player,
+    const Level *level,
+    const TextureManager *textures,
+    uint32_t *pixels,
+    float *depth,
+    int width,
+    int height
+) {
     if (!player || !level || !pixels || !depth || width <= 0 || height <= 0 ||
         !level->vertices || !level->walls || !level->sectors) return;
 
@@ -323,16 +353,39 @@ void render_planes_draw(const Player *player, const Level *level,
                 }
                 if (contains) continue;
                 const Sector *s = &level->sectors[sector];
-                draw_world_triangle(
-                    player, a, b, c,
-                    s->floor_height, false,
-                    pixels, depth, width, height
+
+                const Texture *floor_texture = texture_manager_get(
+                    textures,
+                    s->floor_texture_id
+                );
+
+                const Texture *ceiling_texture = texture_manager_get(
+                    textures,
+                    s->ceiling_texture_id
                 );
 
                 draw_world_triangle(
-                    player, a, b, c,
-                    s->ceiling_height, true,
-                    pixels, depth, width, height
+                    player,
+                    a, b, c,
+                    s->floor_height,
+                    false,
+                    floor_texture,
+                    pixels,
+                    depth,
+                    width,
+                    height
+                );
+
+                draw_world_triangle(
+                    player,
+                    a, b, c,
+                    s->ceiling_height,
+                    true,
+                    ceiling_texture,
+                    pixels,
+                    depth,
+                    width,
+                    height
                 );
                 for (int j = i; j < length-1; ++j) remaining[j] = remaining[j+1];
                 --length;

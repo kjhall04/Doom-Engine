@@ -701,9 +701,16 @@ void render_walls_draw_solid(
     }
 
     /* Render sector floors and ceilings using shared inverse depth. */
-    render_planes_draw(player, level, buffers.pixels, buffers.depth,
-                       buffers.width, buffers.height);
-
+    render_planes_draw(
+        player,
+        level,
+        textures,
+        buffers.pixels,
+        buffers.depth,
+        buffers.width,
+        buffers.height
+    );
+    
     Uint64 stage_end = SDL_GetPerformanceCounter();
     clear_ticks += stage_end - stage_start;
 
