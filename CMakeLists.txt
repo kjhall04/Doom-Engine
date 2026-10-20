@@ -19,6 +19,7 @@ add_executable(GameEngine
     src/renderer/render_portals.c
     src/renderer/render_sector_traversal.c
     src/textures/texture.c
+    src/textures/texture_manager.c
 )
 
 target_include_directories(GameEngine PRIVATE

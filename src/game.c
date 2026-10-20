@@ -52,6 +52,22 @@ bool game_new(struct Game **game) {
     input_init(&g->input);
     level_init(&g->level);
 
+    texture_manager_init(&g->textures);
+
+    const char *texture_paths[] = {
+        "assets/textures/brick.bmp",
+        "assets/textures/stone.bmp",
+        "assets/textures/metal.bmp",
+        "assets/textures/floor.bmp",
+        "assets/textures/ceiling.bmp"
+    };
+
+    for (int i = 0; i < 5; ++i) {
+        if (!texture_manager_load(&g->textures, i, texture_paths[i])) {
+            SDL_Log("Texture %d unavailable; using fallback", i);
+        }
+    }
+
     SDL_SetWindowRelativeMouseMode(g->window, true);
 
     g->is_running = true;
@@ -75,6 +91,8 @@ void game_free(struct Game **game) {
         }
         
         level_free(&g->level);
+
+        texture_manager_destroy(&g->textures);
 
         SDL_Quit();
 
@@ -123,7 +141,8 @@ void game_draw(Game *game) {
     renderer_render(
         game->renderer,
         &game->player,
-        &game->level
+        &game->level,
+        &game->textures
     );
 }
 

@@ -7,6 +7,7 @@
 #include "input.h"
 #include "player.h"
 #include "level.h"
+#include "textures/texture_manager.h"
 
 // Game object structure
 
@@ -21,6 +22,8 @@ typedef struct Game {
     Player player;
 
     Level level;
+
+    TextureManager textures;
 } Game;
 
 bool game_new(Game **game);

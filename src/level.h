@@ -12,11 +12,16 @@ typedef struct Wall {
 
     int front_sector;
     int back_sector;
+
+    int texture_id;
 } Wall;
 
 typedef struct Sector {
     float floor_height;
     float ceiling_height;
+
+    int floor_texture_id;
+    int ceiling_texture_id;
 } Sector;
 
 typedef struct Level {

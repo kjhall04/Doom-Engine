@@ -47,54 +47,13 @@ void level_init(Level *level) {
     );
 
 
-    level->walls[0] = (Wall){
-        0,
-        1,
-        0,
-        -1
-    };
-
-    level->walls[1] = (Wall){
-        1,
-        2,
-        1,
-        -1
-    };
-
-    level->walls[2] = (Wall){
-        2,
-        3,
-        1,
-        -1
-    };
-
-    level->walls[3] = (Wall){
-        3,
-        4,
-        1,
-        -1
-    };
-
-    level->walls[4] = (Wall){
-        4,
-        5,
-        0,
-        -1
-    };
-
-    level->walls[5] = (Wall){
-        5,
-        0,
-        0,
-        -1
-    };
-
-    level->walls[6] = (Wall){
-        1,
-        4,
-        0,
-        1
-    };
+    level->walls[0] = (Wall){0, 1, 0, -1, 0};
+    level->walls[1] = (Wall){1, 2, 1, -1, 1};
+    level->walls[2] = (Wall){2, 3, 1, -1, 1};
+    level->walls[3] = (Wall){3, 4, 1, -1, 1};
+    level->walls[4] = (Wall){4, 5, 0, -1, 0};
+    level->walls[5] = (Wall){5, 0, 0, -1, 0};
+    level->walls[6] = (Wall){1, 4, 0,  1, 2};
 
     level->sector_count = 2;
 
@@ -103,13 +62,17 @@ void level_init(Level *level) {
     );
 
     level->sectors[0] = (Sector){
-        0.0,
-        5.0f
+        .floor_height = 0.0f,
+        .ceiling_height = 5.0f,
+        .floor_texture_id = 3,
+        .ceiling_texture_id = 4
     };
 
     level->sectors[1] = (Sector){
-        1.0f,
-        6.0f
+        .floor_height = 1.0f,
+        .ceiling_height = 6.0f,
+        .floor_texture_id = 3,
+        .ceiling_texture_id = 4
     };
 }
 

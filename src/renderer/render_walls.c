@@ -51,6 +51,8 @@ typedef struct WallRenderBuffers {
 
     int *clip_top;
     int *clip_bottom;
+
+    const TextureManager *textures;
 } WallRenderBuffers;
 
 static WallRenderBuffers buffers = {0};
@@ -94,26 +96,6 @@ static void wall_release_buffers(void) {
     buffers.height = 0;
     buffers.renderer = NULL;
 }
-
-
-static Texture wall_texture = {0};
-static bool wall_texture_initialized = false;
-
-static void wall_initialize_texture(void) {
-    if (wall_texture_initialized) {
-        return;
-    }
-
-    wall_texture_initialized = true;
-
-    if (!texture_load_bmp(
-        &wall_texture,
-        "assets/textures/brick.bmp"
-    )) {
-        SDL_Log("Using procedural wall texture fallback.");
-    }
-}
-
 
 static bool wall_prepare_buffers(
     SDL_Renderer *renderer,
@@ -228,9 +210,18 @@ static uint32_t wall_sample_procedural(float u, float v) {
 }
 
 
-static uint32_t wall_sample_texture(float u, float v) {
-    if (wall_texture.pixels) {
-        return texture_sample(&wall_texture, u, v);
+static uint32_t wall_sample_texture(
+    int texture_id,
+    float u,
+    float v
+) {
+    const Texture *texture = texture_manager_get(
+        buffers.textures,
+        texture_id
+    );
+
+    if (texture != NULL) {
+        return texture_sample(texture, u, v);
     }
 
     return wall_sample_procedural(u, v);
@@ -240,7 +231,8 @@ static uint32_t wall_sample_texture(float u, float v) {
 static void wall_rasterize_triangle(
     const ScreenVertex *a,
     const ScreenVertex *b,
-    const ScreenVertex *c
+    const ScreenVertex *c,
+    int texture_id
 ) {
     float area = wall_edge(a, b, c->x, c->y);
 
@@ -355,7 +347,11 @@ static void wall_rasterize_triangle(
                         float v = v_over_z / inverse_z;
 
                         buffers.depth[index] = inverse_z;
-                        buffers.pixels[index] = wall_sample_texture(u, v);
+                        buffers.pixels[index] = wall_sample_texture(
+                                                                texture_id,
+                                                                u,
+                                                                v
+                                                            );
                     }
                 }
             }
@@ -429,7 +425,8 @@ static void wall_draw_section(
     const Vertex *start,
     const Vertex *end,
     float bottom_height,
-    float top_height
+    float top_height,
+    int texture_id
 ) {
     if (top_height <= bottom_height) {
         return;
@@ -529,7 +526,8 @@ static void wall_draw_section(
         wall_rasterize_triangle(
             &projected[0],
             &projected[i],
-            &projected[i + 1]
+            &projected[i + 1],
+            texture_id
         );
     }
 }
@@ -563,7 +561,8 @@ static void wall_draw_segment(
             start,
             end,
             front->floor_height,
-            front->ceiling_height
+            front->ceiling_height,
+            wall->texture_id
         );
 
         return;
@@ -618,7 +617,8 @@ static void wall_draw_segment(
             fmaxf(
                 front->ceiling_height,
                 back->ceiling_height
-            )
+            ),
+            wall->texture_id
         );
 
         return;
@@ -629,7 +629,8 @@ static void wall_draw_segment(
         start,
         end,
         lower_bottom,
-        lower_top
+        lower_top,
+        wall->texture_id
     );
 
     wall_draw_section(
@@ -637,7 +638,8 @@ static void wall_draw_segment(
         start,
         end,
         upper_bottom,
-        upper_top
+        upper_top,
+        wall->texture_id
     );
 }
 
@@ -655,10 +657,10 @@ void render_walls_draw_solid(
     SDL_Renderer *renderer,
     const Player *player,
     const Level *level,
+    const TextureManager *textures,
     int screen_width,
     int screen_height
 ) {
-    wall_initialize_texture();
 
     if (renderer == NULL || player == NULL || level == NULL ||
         screen_width <= 0 || screen_height <= 0 ||
@@ -670,6 +672,8 @@ void render_walls_draw_solid(
     if (!wall_prepare_buffers(renderer, screen_width, screen_height)) {
         return;
     }
+
+    buffers.textures = textures;
 
     wall_clip_reset(screen_width);
     wall_clip_vertical_reset();

@@ -3,6 +3,7 @@
 
 #include "../player.h"
 #include "../level.h"
+#include "../textures/texture_manager.h"
 
 #include <stdbool.h>
 #include <SDL3/SDL.h>
@@ -55,7 +56,8 @@ void renderer_draw_screen_wall(
 void renderer_render(
     SDL_Renderer *renderer,
     Player *player,
-    Level *level
+    Level *level,
+    const TextureManager *textures
 );
 
 #endif

@@ -1233,7 +1233,8 @@ static int renderer_build_floors(
 void renderer_render(
     SDL_Renderer *renderer,
     Player *player,
-    Level *level
+    Level *level,
+    const TextureManager *textures
 ) {
     SDL_SetRenderDrawColor(
         renderer, 20, 20, 28, 255
@@ -1256,6 +1257,7 @@ void renderer_render(
         renderer,
         player,
         level,
+        textures,
         screen_width,
         screen_height
     );
