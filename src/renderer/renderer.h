@@ -1,57 +1,11 @@
 #ifndef RENDERER_H
 #define RENDERER_H
 
+#include <SDL3/SDL.h>
+
 #include "../player.h"
 #include "../level.h"
 #include "../textures/texture_manager.h"
-
-#include <stdbool.h>
-#include <SDL3/SDL.h>
-
-#define MAX_SCREEN_GEOMETRY_POINTS 16
-#define MAX_SCREEN_GEOMETRY_POLYGONS 3
-
-typedef struct ScreenPoint {
-    float x;
-    float y;
-} ScreenPoint;
-
-typedef struct ScreenPolygon {
-    ScreenPoint points[MAX_SCREEN_GEOMETRY_POINTS];
-    int point_count;
-} ScreenPolygon;
-
-
-typedef struct ScreenGeometry {
-    ScreenPolygon polygons[MAX_SCREEN_GEOMETRY_POLYGONS];
-    int polygon_count;
-} ScreenGeometry;
-
-
-bool renderer_project_point(
-    Player *player,
-    float world_x,
-    float world_y,
-    float world_z,
-    float screen_width,
-    float screen_height,
-    float *screen_x,
-    float *screen_y
-);
-
-bool renderer_draw_wall(
-    Player *player,
-    Level *level,
-    Wall *wall,
-    float screen_width,
-    float screen_height,
-    ScreenGeometry *screen_geometry
-);
-
-void renderer_draw_screen_wall(
-    SDL_Renderer *renderer,
-    ScreenGeometry *screen_geometry
-);
 
 void renderer_render(
     SDL_Renderer *renderer,

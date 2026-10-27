@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <math.h>
 #include <float.h>
+#include <string.h>
 
 #define LEVEL_MAX_ELEMENTS 100000
 
@@ -262,4 +263,125 @@ bool level_load_json(Level *level, const char *path) {
            level->sector_count);
 
     return true;
+}
+
+bool level_save_json(const Level *level, const char *path) {
+    if (!level || !path ||
+        !level->vertices || !level->walls || !level->sectors ||
+        level->vertex_count <= 0 ||
+        level->wall_count <= 0 ||
+        level->sector_count <= 0) {
+        return false;
+    }
+
+    cJSON *root = cJSON_CreateObject();
+
+    if (!root) return false;
+
+    cJSON *vertices = cJSON_AddArrayToObject(root, "vertices");
+    cJSON *walls = cJSON_AddArrayToObject(root, "walls");
+    cJSON *sectors = cJSON_AddArrayToObject(root, "sectors");
+
+    bool success =
+        cJSON_AddNumberToObject(root, "version", 1) != NULL &&
+        cJSON_AddStringToObject(root, "name", "Untitled Level") != NULL &&
+        vertices != NULL &&
+        walls != NULL &&
+        sectors != NULL;
+
+    for (int i = 0; success && i < level->vertex_count; ++i) {
+        const Vertex *v = &level->vertices[i];
+
+        cJSON *item = cJSON_CreateObject();
+
+        if (!item) {
+            success = false;
+            break;
+        }
+
+        cJSON_AddItemToArray(vertices, item);
+
+        success =
+            cJSON_AddNumberToObject(item, "x", v->x) != NULL &&
+            cJSON_AddNumberToObject(item, "z", v->z) != NULL;
+    }
+
+    for (int i = 0; success && i < level->wall_count; ++i) {
+        const Wall *w = &level->walls[i];
+
+        cJSON *item = cJSON_CreateObject();
+
+        if (!item) {
+            success = false;
+            break;
+        }
+
+        cJSON_AddItemToArray(walls, item);
+
+        success =
+            cJSON_AddNumberToObject(item, "vertex_start", w->vertex_start) != NULL &&
+            cJSON_AddNumberToObject(item, "vertex_end", w->vertex_end) != NULL &&
+            cJSON_AddNumberToObject(item, "front_sector", w->front_sector) != NULL &&
+            cJSON_AddNumberToObject(item, "back_sector", w->back_sector) != NULL &&
+            cJSON_AddNumberToObject(item, "texture_id", w->texture_id) != NULL;
+    }
+
+    for (int i = 0; success && i < level->sector_count; ++i) {
+        const Sector *s = &level->sectors[i];
+
+        cJSON *item = cJSON_CreateObject();
+
+        if (!item) {
+            success = false;
+            break;
+        }
+
+        cJSON_AddItemToArray(sectors, item);
+
+        success =
+            cJSON_AddNumberToObject(item, "floor_height", s->floor_height) != NULL &&
+            cJSON_AddNumberToObject(item, "ceiling_height", s->ceiling_height) != NULL &&
+            cJSON_AddNumberToObject(item, "floor_texture_id", s->floor_texture_id) != NULL &&
+            cJSON_AddNumberToObject(item, "ceiling_texture_id", s->ceiling_texture_id) != NULL;
+    }
+
+    if (!success) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    char *json = cJSON_Print(root);
+    cJSON_Delete(root);
+
+    if (!json) return false;
+
+    FILE *file = fopen(path, "wb");
+
+    if (!file) {
+        cJSON_free(json);
+        fprintf(stderr, "Cannot save level: %s\n", path);
+        return false;
+    }
+
+    size_t length = strlen(json);
+    size_t written = fwrite(json, 1, length, file);
+
+    bool saved = written == length;
+
+    if (saved) {
+        saved = fputc('\n', file) != EOF;
+    }
+
+    if (fclose(file) != 0) {
+        saved = false;
+    }
+
+    if (!saved) {
+        fprintf(stderr, "Failed to write level: %s\n", path);
+    } else {
+        printf("Saved level: %s\n", path);
+    }
+
+    cJSON_free(json);
+    return saved;
 }

@@ -45,6 +45,7 @@ bool game_new(struct Game **game) {
     struct Game *g = *game;
 
     if (!game_init_sdl(g)) {
+        game_free(game);
         return false;
     }
 
@@ -54,7 +55,10 @@ bool game_new(struct Game **game) {
     level_init(&g->level);
 
     if (!level_load_json(&g->level, "levels/test_level.json")) {
-        SDL_Log("Using built-in test level.");
+        SDL_Log("ERROR: Failed to load level.");
+
+        game_free(game);
+        return false;
     }
 
     texture_manager_init(&g->textures);
@@ -168,8 +172,11 @@ void game_run(struct Game *game) {
         
         game_events(game);
 
-        game_update(game, delta_time);
+        if (!game->is_running) {
+            break;
+        }
 
+        game_update(game, delta_time);
         game_draw(game);
     }
 }
