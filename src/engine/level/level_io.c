@@ -1,5 +1,5 @@
 #include "level_io.h"
-#include "../external/cJSON/cJSON.h"
+#include "cJSON.h"
 
 #include <stdio.h>
 #include <stdlib.h>

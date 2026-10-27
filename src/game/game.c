@@ -1,8 +1,9 @@
 #include "game.h"
-#include "renderer/renderer.h"
-#include "level_io.h"
+#include "engine/renderer/renderer.h"
+#include "engine/level/level_io.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <SDL3/SDL.h>
 
 #define SDL_FLAGS SDL_INIT_VIDEO
@@ -117,36 +118,38 @@ void game_free(struct Game **game) {
 // Watch for game events
 // Escape to close the window
 void game_events(Game *game) {
-
     while (SDL_PollEvent(&game->event)) {
 
         if (game->event.type == SDL_EVENT_QUIT) {
             game->is_running = false;
+            continue;
         }
 
         if (game->event.type == SDL_EVENT_KEY_DOWN &&
             game->event.key.scancode == SDL_SCANCODE_ESCAPE) {
-
             game->is_running = false;
+            continue;
         }
 
-        input_process_event(&game->input, &game->event);
+        input_process_event(
+            &game->input,
+            &game->event
+        );
     }
 }
 
 // Update data
 void game_update(Game *game, float delta_time) {
     player_update(
-        &game->player, 
-        &game->input, 
-        &game->level, 
+        &game->player,
+        &game->input,
+        &game->level,
         delta_time
     );
 }
 
 // Draw the window
 void game_draw(Game *game) {
-
     renderer_render(
         game->renderer,
         &game->player,

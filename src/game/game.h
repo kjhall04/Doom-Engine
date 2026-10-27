@@ -4,12 +4,10 @@
 #include <SDL3/SDL.h>
 #include <stdbool.h>
 
-#include "input.h"
-#include "player.h"
-#include "level.h"
-#include "textures/texture_manager.h"
-
-// Game object structure
+#include "game/input.h"
+#include "game/player.h"
+#include "engine/level/level.h"
+#include "engine/textures/texture_manager.h"
 
 typedef struct Game {
     SDL_Window *window;
@@ -20,9 +18,7 @@ typedef struct Game {
 
     Input input;
     Player player;
-
     Level level;
-
     TextureManager textures;
 } Game;
 

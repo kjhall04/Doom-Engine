@@ -3,9 +3,9 @@
 
 #include <SDL3/SDL.h>
 
-#include "../player.h"
-#include "../level.h"
-#include "../textures/texture_manager.h"
+#include "game/player.h"
+#include "engine/level/level.h"
+#include "engine/textures/texture_manager.h"
 
 void renderer_render(
     SDL_Renderer *renderer,
