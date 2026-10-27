@@ -1,8 +1,8 @@
 #ifndef RENDER_VISIBILITY_H
 #define RENDER_VISIBILITY_H
 
-#include "../level.h"
-#include "../player.h"
+#include "engine/level/level.h"
+#include "game/player.h"
 
 #include <stdbool.h>
 

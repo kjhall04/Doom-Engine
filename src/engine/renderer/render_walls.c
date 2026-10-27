@@ -3,7 +3,7 @@
 #include "render_portals.h"
 #include "render_sector_traversal.h"
 #include "render_planes.h"
-#include "../textures/texture.h"
+#include "engine/textures/texture.h"
 
 #include <SDL3/SDL_timer.h>
 

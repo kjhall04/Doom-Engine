@@ -3,9 +3,9 @@
 
 #include <stdint.h>
 
-#include "../player.h"
-#include "../level.h"
-#include "../textures/texture_manager.h"
+#include "game/player.h"
+#include "level/level.h"
+#include "engine/textures/texture_manager.h"
 
 void render_planes_draw(
     const Player *player,

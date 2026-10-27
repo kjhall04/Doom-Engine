@@ -1,7 +1,7 @@
 #ifndef RENDER_CAMERA_H
 #define RENDER_CAMERA_H
 
-#include "src/player.h"
+#include "game/player.h"
 
 #include <stdbool.h>
 

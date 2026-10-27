@@ -2,8 +2,8 @@
 #define RENDER_PORTALS_H
 
 #include <stdbool.h>
-#include "../player.h"
-#include "../level.h"
+#include "game/player.h"
+#include "engine/level/level.h"
 
 /* Mutable screen clipping window, owned by the wall renderer. */
 typedef struct RenderPortalClip {

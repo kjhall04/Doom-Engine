@@ -1,9 +1,9 @@
 #ifndef RENDER_WALLS_H
 #define RENDER_WALLS_H
 
-#include "../player.h"
-#include "../level.h"
-#include "../textures/texture_manager.h"
+#include "game/player.h"
+#include "engine/level/level.h"
+#include "engine/textures/texture_manager.h"
 
 #include <stdbool.h>
 #include <SDL3/SDL.h>
