@@ -24,6 +24,15 @@ typedef struct Sector {
     int ceiling_texture_id;
 } Sector;
 
+typedef struct PlayerSpawn {
+    float x;
+    float y;
+    float z;
+
+    float yaw;
+    float pitch;
+} PlayerSpawn;
+
 typedef struct Level {
     Vertex *vertices;
     int vertex_count;
@@ -33,6 +42,8 @@ typedef struct Level {
 
     Sector *sectors;
     int sector_count;
+
+    PlayerSpawn player_spawn;
 } Level;
 
 void level_init(Level *level);

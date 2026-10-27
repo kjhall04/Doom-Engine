@@ -12,20 +12,25 @@ typedef struct EditorViewport {
     float camera_z;
     float zoom;
     bool panning;
+
+    bool spawn_selected;
+    bool spawn_dragging;
+    bool spawn_rotating;
 } EditorViewport;
 
 void editor_viewport_init(EditorViewport *viewport);
 
 void editor_viewport_process_event(
-    EditorViewport *viewport,
-    const SDL_Event *event
+    EditorViewport *editor,
+    SDL_Renderer *renderer,
+    const SDL_Event *event,
+    Level *level
 );
 
 void editor_viewport_render(
     SDL_Renderer *renderer,
-    const EditorViewport *viewport,
-    const Level *level,
-    const Player *player
+    const EditorViewport *editor,
+    const Level *level
 );
 
 #endif

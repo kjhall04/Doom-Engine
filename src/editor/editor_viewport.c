@@ -31,36 +31,85 @@ void editor_viewport_init(EditorViewport *editor) {
     editor->zoom = 25.0f;
 }
 
+static void screen_to_world(
+    const EditorViewport *editor, int width, int height,
+    float sx, float sy, float *x, float *z
+) {
+    *x = editor->camera_x + (sx - width * 0.5f) / editor->zoom;
+    *z = editor->camera_z + (sy - height * 0.5f) / editor->zoom;
+}
+
 void editor_viewport_process_event(
     EditorViewport *editor,
-    const SDL_Event *event
+    SDL_Renderer *renderer,
+    const SDL_Event *event,
+    Level *level
 ) {
+    int width = 0, height = 0;
+    if (!SDL_GetRenderOutputSize(renderer, &width, &height)) return;
+
     if (event->type == SDL_EVENT_MOUSE_WHEEL) {
-        float factor = event->wheel.y > 0 ? 1.1f : 0.9f;
-
-        editor->zoom *= factor;
-
-        if (editor->zoom < EDITOR_MIN_ZOOM)
-            editor->zoom = EDITOR_MIN_ZOOM;
-
-        if (editor->zoom > EDITOR_MAX_ZOOM)
-            editor->zoom = EDITOR_MAX_ZOOM;
+        if (event->wheel.y != 0) {
+            editor->zoom *= event->wheel.y > 0 ? 1.1f : 0.9f;
+            if (editor->zoom < EDITOR_MIN_ZOOM) editor->zoom = EDITOR_MIN_ZOOM;
+            if (editor->zoom > EDITOR_MAX_ZOOM) editor->zoom = EDITOR_MAX_ZOOM;
+        }
     }
 
-    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-        event->button.button == SDL_BUTTON_MIDDLE) {
-        editor->panning = true;
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        if (event->button.button == SDL_BUTTON_MIDDLE) editor->panning = true;
+        if (event->button.button == SDL_BUTTON_LEFT) {
+            float sx, sy;
+            world_to_screen(editor, level->player_spawn.x,
+                            level->player_spawn.z, width, height, &sx, &sy);
+            float dx = event->button.x - sx;
+            float dy = event->button.y - sy;
+            editor->spawn_selected = dx * dx + dy * dy <= 144.0f;
+            editor->spawn_dragging = editor->spawn_selected;
+            editor->spawn_rotating = false;
+        }
     }
 
-    if (event->type == SDL_EVENT_MOUSE_BUTTON_UP &&
-        event->button.button == SDL_BUTTON_MIDDLE) {
-        editor->panning = false;
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
+        if (event->button.button == SDL_BUTTON_MIDDLE) editor->panning = false;
+        if (event->button.button == SDL_BUTTON_LEFT) editor->spawn_dragging = false;
     }
 
-    if (event->type == SDL_EVENT_MOUSE_MOTION &&
-        editor->panning) {
-        editor->camera_x -= event->motion.xrel / editor->zoom;
-        editor->camera_z -= event->motion.yrel / editor->zoom;
+    if (event->type == SDL_EVENT_MOUSE_MOTION) {
+        if (editor->panning) {
+            editor->camera_x -= event->motion.xrel / editor->zoom;
+            editor->camera_z -= event->motion.yrel / editor->zoom;
+        }
+        if (editor->spawn_dragging) {
+            screen_to_world(editor, width, height, event->motion.x,
+                            event->motion.y, &level->player_spawn.x,
+                            &level->player_spawn.z);
+        }
+        if (editor->spawn_rotating) {
+            float sx, sy;
+            world_to_screen(editor, level->player_spawn.x,
+                            level->player_spawn.z, width, height, &sx, &sy);
+            level->player_spawn.yaw = atan2f(event->motion.x - sx,
+                                             -(event->motion.y - sy)) *
+                                             (180.0f / 3.14159265358979323846f);
+        }
+    }
+
+    if (event->type == SDL_EVENT_KEY_DOWN && editor->spawn_selected) {
+        switch (event->key.scancode) {
+            case SDL_SCANCODE_R: editor->spawn_rotating = true; break;
+            case SDL_SCANCODE_LEFTBRACKET: level->player_spawn.pitch -= 1.0f; break;
+            case SDL_SCANCODE_RIGHTBRACKET: level->player_spawn.pitch += 1.0f; break;
+            case SDL_SCANCODE_PAGEUP: level->player_spawn.y += 0.1f; break;
+            case SDL_SCANCODE_PAGEDOWN: level->player_spawn.y -= 0.1f; break;
+            default: break;
+        }
+        if (level->player_spawn.pitch > 89.0f) level->player_spawn.pitch = 89.0f;
+        if (level->player_spawn.pitch < -89.0f) level->player_spawn.pitch = -89.0f;
+    }
+    if (event->type == SDL_EVENT_KEY_UP &&
+        event->key.scancode == SDL_SCANCODE_R) {
+        editor->spawn_rotating = false;
     }
 }
 
@@ -161,55 +210,78 @@ static void editor_draw_vertices(
     }
 }
 
-static void editor_draw_player(
-    SDL_Renderer *renderer,
-    const EditorViewport *editor,
-    const Player *player,
-    int width,
-    int height
+static void editor_draw_spawn(
+    SDL_Renderer *renderer, const EditorViewport *editor,
+    const Level *level, int width, int height
 ) {
     float x, y;
-
-    world_to_screen(
-        editor,
-        player->x,
-        player->z,
-        width,
-        height,
-        &x,
-        &y
-    );
-
+    world_to_screen(editor, level->player_spawn.x,
+                    level->player_spawn.z, width, height, &x, &y);
+    float yaw = level->player_spawn.yaw *
+                (3.14159265358979323846f / 180.0f);
     SDL_SetRenderDrawColor(renderer, 255, 215, 95, 255);
-
-    // Player position marker.
-    SDL_FRect marker = {
-        x - 4.0f,
-        y - 4.0f,
-        8.0f,
-        8.0f
-    };
-
+    SDL_FRect marker = {x - 6.0f, y - 6.0f, 12.0f, 12.0f};
     SDL_RenderFillRect(renderer, &marker);
-
-    // Player facing direction, matching the engine's yaw convention.
-    float direction_x = sinf(player->yaw);
-    float direction_z = -cosf(player->yaw);
-
-    SDL_RenderLine(
-        renderer,
-        x,
-        y,
-        x + direction_x * 22.0f,
-        y + direction_z * 22.0f
-    );
+    SDL_RenderLine(renderer, x, y,
+                   x + sinf(yaw) * 30.0f,
+                   y - cosf(yaw) * 30.0f);
+    if (editor->spawn_selected) {
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL_FRect selection = {x - 10.0f, y - 10.0f, 20.0f, 20.0f};
+        SDL_RenderRect(renderer, &selection);
+    }
 }
 
-void editor_render(
+static void editor_draw_controls(SDL_Renderer *renderer)
+{
+    int width, height;
+
+    if (!SDL_GetRenderOutputSize(renderer, &width, &height))
+        return;
+
+    const float x = 12.0f;
+    const float panel_height = 146.0f;
+    const float y = (float)height - panel_height - 12.0f;
+
+    SDL_FRect panel = {x, y, 270.0f, panel_height};
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 12, 16, 24, 230);
+    SDL_RenderFillRect(renderer, &panel);
+
+    SDL_SetRenderDrawColor(renderer, 95, 110, 135, 255);
+    SDL_RenderRect(renderer, &panel);
+
+    SDL_SetRenderDrawColor(renderer, 255, 215, 95, 255);
+    SDL_RenderDebugText(renderer, x + 10, y + 10, "LEVEL EDITOR");
+
+    SDL_SetRenderDrawColor(renderer, 220, 225, 235, 255);
+
+    const char *lines[] = {
+        "Left Drag   Move Spawn",
+        "Middle Drag Pan View",
+        "Wheel       Zoom",
+        "Hold R      Rotate Spawn",
+        "[ / ]       Adjust Pitch",
+        "PgUp/PgDn   Adjust Height",
+        "Ctrl+S      Save",
+        "Esc         Exit"
+    };
+
+    for (int i = 0; i < 8; ++i) {
+        SDL_RenderDebugText(
+            renderer,
+            x + 10,
+            y + 30 + i * 13,
+            lines[i]
+        );
+    }
+}
+
+void editor_viewport_render(
     SDL_Renderer *renderer,
     const EditorViewport *editor,
-    const Level *level,
-    const Player *player
+    const Level *level
 ) {
     int width, height;
 
@@ -222,7 +294,8 @@ void editor_render(
     editor_draw_grid(renderer, editor, width, height);
     editor_draw_walls(renderer, editor, level, width, height);
     editor_draw_vertices(renderer, editor, level, width, height);
-    editor_draw_player(renderer, editor, player, width, height);
+    editor_draw_spawn(renderer, editor, level, width, height);
+    editor_draw_controls(renderer);
 
     SDL_RenderPresent(renderer);
 }

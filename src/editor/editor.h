@@ -5,7 +5,6 @@
 #include <SDL3/SDL.h>
 
 #include "engine/level/level.h"
-#include "game/player.h"
 #include "editor_viewport.h"
 
 typedef struct Editor {
@@ -15,7 +14,7 @@ typedef struct Editor {
     bool is_running;
 
     Level level;
-    Player preview_player;
+    char level_path[512];
     EditorViewport viewport;
 } Editor;
 

@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <SDL3/SDL.h>
 
 #define SDL_FLAGS SDL_INIT_VIDEO
@@ -36,6 +37,28 @@ static bool game_init_sdl(Game *game) {
     return true;
 }
 
+// Find the sector containing the spawn point using boundary crossings.
+// A portal wall belongs to both adjacent sectors.
+static int game_find_spawn_sector(const Level *level, float x, float z) {
+    for (int sector = 0; sector < level->sector_count; ++sector) {
+        int crossings = 0;
+        for (int i = 0; i < level->wall_count; ++i) {
+            const Wall *wall = &level->walls[i];
+            if (wall->front_sector != sector && wall->back_sector != sector)
+                continue;
+            const Vertex *a = &level->vertices[wall->vertex_start];
+            const Vertex *b = &level->vertices[wall->vertex_end];
+            if ((a->z > z) != (b->z > z)) {
+                float intersection = a->x +
+                    (z - a->z) * (b->x - a->x) / (b->z - a->z);
+                if (x < intersection) ++crossings;
+            }
+        }
+        if (crossings & 1) return sector;
+    }
+    return -1;
+}
+
 // Start new game instance
 bool game_new(struct Game **game) {
     *game = calloc(1, sizeof(struct Game));
@@ -61,6 +84,22 @@ bool game_new(struct Game **game) {
         game_free(game);
         return false;
     }
+
+    // Level spawn stores angles in degrees; Player uses radians.
+    const PlayerSpawn *spawn = &g->level.player_spawn;
+    g->player.x = spawn->x;
+    g->player.y = spawn->y;  // Feet height, not camera/eye height.
+    g->player.z = spawn->z;
+    g->player.yaw = spawn->yaw * (3.14159265358979323846f / 180.0f);
+    g->player.pitch = spawn->pitch * (3.14159265358979323846f / 180.0f);
+    int spawn_sector = game_find_spawn_sector(&g->level, spawn->x, spawn->z);
+    if (spawn_sector >= 0) {
+        g->player.sector = spawn_sector;
+    } else {
+        SDL_Log("Warning: spawn is outside known sectors; using sector 0");
+    }
+    g->player.step_start_y = g->player.y;
+    g->player.step_target_y = g->player.y;
 
     texture_manager_init(&g->textures);
 

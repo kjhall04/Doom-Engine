@@ -238,6 +238,20 @@ bool level_load_json(Level *level, const char *path) {
     }
 
     Level loaded = {0};
+    level_init(&loaded);
+
+    const cJSON *spawn = cJSON_GetObjectItemCaseSensitive(root, "player_spawn");
+
+    if (valid && spawn) {
+        valid = cJSON_IsObject(spawn) &&
+                read_float(spawn, "x", &loaded.player_spawn.x) &&
+                read_float(spawn, "y", &loaded.player_spawn.y) &&
+                read_float(spawn, "z", &loaded.player_spawn.z) &&
+                read_float(spawn, "yaw", &loaded.player_spawn.yaw) &&
+                read_float(spawn, "pitch", &loaded.player_spawn.pitch) &&
+                loaded.player_spawn.pitch >= -89.0f &&
+                loaded.player_spawn.pitch <= 89.0f;
+    }
 
     if (valid) {
         valid = read_vertices(&loaded, vertices) &&
@@ -344,6 +358,22 @@ bool level_save_json(const Level *level, const char *path) {
             cJSON_AddNumberToObject(item, "floor_texture_id", s->floor_texture_id) != NULL &&
             cJSON_AddNumberToObject(item, "ceiling_texture_id", s->ceiling_texture_id) != NULL;
     }
+
+    cJSON *spawn = cJSON_CreateObject();
+
+    if (!spawn) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    cJSON_AddNumberToObject(spawn, "x", level->player_spawn.x);
+    cJSON_AddNumberToObject(spawn, "y", level->player_spawn.y);
+    cJSON_AddNumberToObject(spawn, "z", level->player_spawn.z);
+
+    cJSON_AddNumberToObject(spawn, "yaw", level->player_spawn.yaw);
+    cJSON_AddNumberToObject(spawn, "pitch", level->player_spawn.pitch);
+
+    cJSON_AddItemToObject(root, "player_spawn", spawn);
 
     if (!success) {
         cJSON_Delete(root);
