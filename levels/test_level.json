@@ -1,0 +1,77 @@
+{
+    "version": 1,
+    "name": "Test Level",
+    "vertices": [
+        { "x": -10.0, "z": -5.0 },
+        { "x":   0.0, "z": -5.0 },
+        { "x":  10.0, "z": -5.0 },
+        { "x":  10.0, "z":  5.0 },
+        { "x":   0.0, "z":  5.0 },
+        { "x": -10.0, "z":  5.0 }
+    ],
+    "walls": [
+        {
+            "vertex_start": 0,
+            "vertex_end": 1,
+            "front_sector": 0,
+            "back_sector": -1,
+            "texture_id": 0
+        },
+        {
+            "vertex_start": 1,
+            "vertex_end": 2,
+            "front_sector": 1,
+            "back_sector": -1,
+            "texture_id": 1
+        },
+        {
+            "vertex_start": 2,
+            "vertex_end": 3,
+            "front_sector": 1,
+            "back_sector": -1,
+            "texture_id": 1
+        },
+        {
+            "vertex_start": 3,
+            "vertex_end": 4,
+            "front_sector": 1,
+            "back_sector": -1,
+            "texture_id": 1
+        },
+        {
+            "vertex_start": 4,
+            "vertex_end": 5,
+            "front_sector": 0,
+            "back_sector": -1,
+            "texture_id": 0
+        },
+        {
+            "vertex_start": 5,
+            "vertex_end": 0,
+            "front_sector": 0,
+            "back_sector": -1,
+            "texture_id": 0
+        },
+        {
+            "vertex_start": 1,
+            "vertex_end": 4,
+            "front_sector": 0,
+            "back_sector": 1,
+            "texture_id": 2
+        }
+    ],
+    "sectors": [
+        {
+            "floor_height": 0.0,
+            "ceiling_height": 5.0,
+            "floor_texture_id": 3,
+            "ceiling_texture_id": 4
+        },
+        {
+            "floor_height": 1.0,
+            "ceiling_height": 6.0,
+            "floor_texture_id": 3,
+            "ceiling_texture_id": 4
+        }
+    ]
+}

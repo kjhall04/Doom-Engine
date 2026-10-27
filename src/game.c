@@ -1,5 +1,6 @@
 #include "game.h"
 #include "renderer/renderer.h"
+#include "level_io.h"
 
 #include <stdio.h>
 #include <SDL3/SDL.h>
@@ -51,6 +52,10 @@ bool game_new(struct Game **game) {
     player_init(&g->player);
     input_init(&g->input);
     level_init(&g->level);
+
+    if (!level_load_json(&g->level, "levels/test_level.json")) {
+        SDL_Log("Using built-in test level.");
+    }
 
     texture_manager_init(&g->textures);
 
