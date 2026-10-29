@@ -16,6 +16,14 @@ typedef struct EditorViewport {
     bool spawn_selected;
     bool spawn_dragging;
     bool spawn_rotating;
+
+    int selected_vertex;
+    bool vertex_dragging;
+    float vertex_drag_offset_x;
+    float vertex_drag_offset_z;
+
+    bool snap_enabled;
+    float grid_size;
 } EditorViewport;
 
 void editor_viewport_init(EditorViewport *viewport);
