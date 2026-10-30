@@ -38,6 +38,10 @@ void editor_viewport_init(EditorViewport *editor) {
 
     editor->snap_enabled = true;
     editor->grid_size = 1.0f;
+
+    editor->save_notification_visible = false;
+    editor->save_notification_success = false;
+    editor->save_notification_time = 0;
 }
 
 static void screen_to_world(
@@ -657,6 +661,78 @@ static void editor_draw_properties(
     );
 }
 
+void editor_viewport_show_save_notification(
+    EditorViewport *editor,
+    bool success
+) {
+    editor->save_notification_visible = true;
+    editor->save_notification_success = success;
+    editor->save_notification_time = SDL_GetTicks();
+}
+
+static void editor_draw_save_notification(
+    SDL_Renderer *renderer,
+    const EditorViewport *editor
+) {
+    if (!editor->save_notification_visible)
+        return;
+
+    Uint64 elapsed =
+        SDL_GetTicks() - editor->save_notification_time;
+
+    // Display for 3 seconds
+    if (elapsed >= 3000)
+        return;
+
+    int width, height;
+
+    if (!SDL_GetRenderOutputSize(renderer, &width, &height))
+        return;
+
+    const float panel_width = 260.0f;
+    const float panel_height = 60.0f;
+
+    const float x = (float)width - panel_width - 12.0f;
+    const float y = 215.0f;
+
+    SDL_FRect panel = {
+        x, y, panel_width, panel_height
+    };
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+    if (editor->save_notification_success) {
+        SDL_SetRenderDrawColor(renderer, 20, 55, 35, 235);
+    } else {
+        SDL_SetRenderDrawColor(renderer, 75, 25, 25, 235);
+    }
+
+    SDL_RenderFillRect(renderer, &panel);
+
+    SDL_SetRenderDrawColor(renderer, 180, 190, 200, 255);
+    SDL_RenderRect(renderer, &panel);
+
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+
+    SDL_RenderDebugText(
+        renderer,
+        x + 12,
+        y + 12,
+        editor->save_notification_success
+            ? "LEVEL SAVED"
+            : "SAVE FAILED"
+    );
+
+    SDL_RenderDebugText(
+        renderer,
+        x + 12,
+        y + 32,
+        editor->save_notification_success
+            ? "Changes saved successfully."
+            : "Could not save level."
+    );
+}
+
 void editor_viewport_render(
     SDL_Renderer *renderer,
     const EditorViewport *editor,
@@ -677,6 +753,7 @@ void editor_viewport_render(
 
     editor_draw_controls(renderer);
     editor_draw_properties(renderer, editor, level);
+    editor_draw_save_notification(renderer, editor);
 
     SDL_RenderPresent(renderer);
 }

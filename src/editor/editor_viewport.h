@@ -24,6 +24,10 @@ typedef struct EditorViewport {
 
     bool snap_enabled;
     float grid_size;
+
+    bool save_notification_visible;
+    bool save_notification_success;
+    Uint64 save_notification_time;
 } EditorViewport;
 
 void editor_viewport_init(EditorViewport *viewport);
@@ -39,6 +43,11 @@ void editor_viewport_render(
     SDL_Renderer *renderer,
     const EditorViewport *editor,
     const Level *level
+);
+
+void editor_viewport_show_save_notification(
+    EditorViewport *editor,
+    bool success
 );
 
 #endif

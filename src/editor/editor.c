@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "engine/level/level_io.h"
+#include "editor_viewport.h"
 
 #include <stdio.h>
 
@@ -84,11 +85,24 @@ static void editor_events(Editor *editor) {
             !event.key.repeat &&
             event.key.scancode == SDL_SCANCODE_S &&
             (event.key.mod & SDL_KMOD_CTRL)) {
-            if (level_save_json(&editor->level, editor->level_path)) {
+
+            bool saved = level_save_json(
+                &editor->level,
+                editor->level_path
+            );
+
+            if (saved) {
                 SDL_Log("Saved level: %s", editor->level_path);
             } else {
                 SDL_Log("Failed to save: %s", editor->level_path);
             }
+
+            // Show save confirmation in the editor
+            editor_viewport_show_save_notification(
+                &editor->viewport,
+                saved
+            );
+
             continue;
         }
 
