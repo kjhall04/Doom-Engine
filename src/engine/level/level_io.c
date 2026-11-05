@@ -288,6 +288,40 @@ bool level_save_json(const Level *level, const char *path) {
         return false;
     }
 
+    // Validate references before writing; never save a level the loader rejects.
+    for (int i = 0; i < level->sector_count; ++i) {
+        const Sector *sec = &level->sectors[i];
+        if (!isfinite(sec->floor_height) || !isfinite(sec->ceiling_height) ||
+            sec->floor_height >= sec->ceiling_height ||
+            sec->floor_texture_id < 0 || sec->ceiling_texture_id < 0) {
+            fprintf(stderr, "Cannot save: invalid sector %d\n", i);
+            return false;
+        }
+    }
+    for (int i = 0; i < level->wall_count; ++i) {
+        const Wall *w = &level->walls[i];
+        if (w->vertex_start < 0 || w->vertex_start >= level->vertex_count ||
+            w->vertex_end < 0 || w->vertex_end >= level->vertex_count ||
+            w->vertex_start == w->vertex_end ||
+            w->front_sector < 0 || w->front_sector >= level->sector_count ||
+            w->back_sector < -1 || w->back_sector >= level->sector_count ||
+            w->back_sector == w->front_sector || w->texture_id < 0) {
+            fprintf(stderr, "Cannot save: invalid wall %d (front=%d back=%d)\n",
+                i, w->front_sector, w->back_sector);
+            return false;
+        }
+    }
+    for (int i = 0; i < level->vertex_count; ++i) {
+        if (!isfinite(level->vertices[i].x) || !isfinite(level->vertices[i].z)) {
+            fprintf(stderr, "Cannot save: invalid vertex %d\n", i);
+            return false;
+        }
+    }
+    if (!isfinite(level->player_spawn.x) || !isfinite(level->player_spawn.y) ||
+        !isfinite(level->player_spawn.z) || !isfinite(level->player_spawn.yaw) ||
+        !isfinite(level->player_spawn.pitch) || level->player_spawn.pitch < -89.0f ||
+        level->player_spawn.pitch > 89.0f) return false;
+
     cJSON *root = cJSON_CreateObject();
 
     if (!root) return false;

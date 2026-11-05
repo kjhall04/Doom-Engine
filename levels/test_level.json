@@ -17,6 +17,18 @@
 		}, {
 			"x":	-11,
 			"z":	4
+		}, {
+			"x":	-13,
+			"z":	-5
+		}, {
+			"x":	-16,
+			"z":	-4
+		}, {
+			"x":	-16,
+			"z":	2
+		}, {
+			"x":	-11,
+			"z":	2
 		}],
 	"walls":	[{
 			"vertex_start":	0,
@@ -50,7 +62,7 @@
 			"texture_id":	0
 		}, {
 			"vertex_start":	5,
-			"vertex_end":	0,
+			"vertex_end":	9,
 			"front_sector":	0,
 			"back_sector":	-1,
 			"texture_id":	0
@@ -60,6 +72,36 @@
 			"front_sector":	0,
 			"back_sector":	1,
 			"texture_id":	2
+		}, {
+			"vertex_start":	6,
+			"vertex_end":	0,
+			"front_sector":	0,
+			"back_sector":	-1,
+			"texture_id":	0
+		}, {
+			"vertex_start":	9,
+			"vertex_end":	6,
+			"front_sector":	0,
+			"back_sector":	2,
+			"texture_id":	0
+		}, {
+			"vertex_start":	6,
+			"vertex_end":	7,
+			"front_sector":	2,
+			"back_sector":	-1,
+			"texture_id":	0
+		}, {
+			"vertex_start":	7,
+			"vertex_end":	8,
+			"front_sector":	2,
+			"back_sector":	-1,
+			"texture_id":	0
+		}, {
+			"vertex_start":	8,
+			"vertex_end":	9,
+			"front_sector":	2,
+			"back_sector":	-1,
+			"texture_id":	0
 		}],
 	"sectors":	[{
 			"floor_height":	0,
@@ -71,11 +113,16 @@
 			"ceiling_height":	6,
 			"floor_texture_id":	3,
 			"ceiling_texture_id":	4
+		}, {
+			"floor_height":	0,
+			"ceiling_height":	5,
+			"floor_texture_id":	3,
+			"ceiling_texture_id":	4
 		}],
 	"version":	1,
 	"name":	"Untitled Level",
 	"player_spawn":	{
-		"x":	-6,
+		"x":	-14,
 		"y":	0.10000000149011612,
 		"z":	-1,
 		"yaw":	-0.45113849639892578,

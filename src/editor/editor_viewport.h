@@ -7,6 +7,13 @@
 #include "engine/level/level.h"
 #include "game/player.h"
 
+typedef enum EditorTool {
+    EDITOR_TOOL_SELECT = 0,
+    EDITOR_TOOL_VERTEX,
+    EDITOR_TOOL_WALL,
+    EDITOR_TOOL_SECTOR
+} EditorTool;
+
 typedef struct EditorViewport {
     float camera_x;
     float camera_z;
@@ -28,6 +35,11 @@ typedef struct EditorViewport {
     bool save_notification_visible;
     bool save_notification_success;
     Uint64 save_notification_time;
+
+    EditorTool active_tool;
+    int wall_start_vertex;
+    int selected_wall;
+    int selected_sector;
 } EditorViewport;
 
 void editor_viewport_init(EditorViewport *viewport);
