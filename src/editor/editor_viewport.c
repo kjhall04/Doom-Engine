@@ -28,7 +28,9 @@ static void world_to_screen(
         (world_z - editor->camera_z) * editor->zoom;
 }
 
+static void editor_history_reset(void);
 void editor_viewport_init(EditorViewport *editor) {
+    editor_history_reset();
     *editor = (EditorViewport){0};
 
     editor->camera_x = 0.0f;
@@ -50,7 +52,8 @@ void editor_viewport_init(EditorViewport *editor) {
     editor->active_tool = EDITOR_TOOL_SELECT;
     editor->wall_start_vertex = -1;
     editor->selected_wall = -1;
-    editor->selected_sector = 0;
+    editor->selected_sector = -1;
+    editor->show_sector_fill = true;
 }
 
 static void screen_to_world(
@@ -249,7 +252,7 @@ static int next_face_edge(const Level *l, int edge) {
     for (int w=0; w<l->wall_count; ++w) {
         for (int r=0; r<2; ++r) {
             int e=2*w+r;
-            if (edge_origin(l,e)!=at) continue;
+            if (edge_origin(l,e)!=at || e==(edge^1)) continue;
             Vertex to=l->vertices[edge_target(l,e)];
             float a=atan2f(to.z-v.z,to.x-v.x);
             float clockwise=reverse-a;
@@ -258,7 +261,7 @@ static int next_face_edge(const Level *l, int edge) {
             if (clockwise<best) { best=clockwise; chosen=e; }
         }
     }
-    return chosen;
+    return chosen>=0 ? chosen : (edge^1);
 }
 /* Positive signed area is an enclosed face in the editor's X/Z axes.
    Returns its half-edges and area, or zero for incomplete/outer faces. */
@@ -330,24 +333,74 @@ static int assign_face(Level *l, const int *edges, int count) {
     for (int i=0;i<count;i++) edge_assign(l,edges[i],owner);
     return owner;
 }
-/* Auto-detect new rooms after closing a wall loop; existing sector
-   boundaries stay intact and a shared wall gains its second side. */
+/* Rebuild face membership from all closed loops. Each bounded face gets exactly
+   one sector. Shared walls are portals; exterior half-edges remain -1.
+   Keep sector IDs when possible to preserve existing floor/ceiling properties. */
 static void auto_assign_closed_faces(Level *l) {
-    if (!l || l->wall_count<3 || l->wall_count>100000) return;
-    int *edges=malloc((size_t)l->wall_count*sizeof(int));
-    unsigned char *seen=calloc((size_t)l->wall_count*2,1);
-    if (!edges || !seen) { free(edges); free(seen); return; }
-    for (int e=0;e<l->wall_count*2;e++) {
+    if (!l || l->wall_count > 100000) return;
+    if (l->wall_count < 3) {
+        for (int i=0;i<l->wall_count;i++) {
+            l->walls[i].front_sector=-1;
+            l->walls[i].back_sector=-1;
+        }
+        return;
+    }
+    int count=l->wall_count*2;
+    int *path=malloc((size_t)l->wall_count*sizeof(int));
+    unsigned char *seen=calloc((size_t)count,1);
+    int *old=malloc((size_t)count*sizeof(int));
+    unsigned char *claimed=calloc((size_t)l->sector_count+1,1);
+    if (!path || !seen || !old || !claimed) {
+        free(path);free(seen);free(old);free(claimed);return;
+    }
+    for (int e=0;e<count;e++) old[e]=edge_sector(l,e);
+    /* Every half-edge is reclassified. No stale portals survive a deletion. */
+    for (int e=0;e<count;e++) edge_assign(l,e,-1);
+    for (int e=0;e<count;e++) {
         if (seen[e]) continue;
         double area=0;
-        int n=trace_face(l,e,edges,&area);
-        if (n>0) {
-            for (int i=0;i<n;i++) seen[edges[i]]=1;
-            assign_face(l,edges,n);
-        } else seen[e]=1;
+        int n=trace_face(l,e,path,&area);
+        if (!n) {seen[e]=1;continue;}
+        for (int i=0;i<n;i++) seen[path[i]]=1;
+        int owner=-1,score=0;
+        for (int i=0;i<n;i++) {
+            int candidate=old[path[i]];
+            if (candidate<0 || candidate>=l->sector_count || claimed[candidate]) continue;
+            int votes=0;
+            for (int j=0;j<n;j++) if (old[path[j]]==candidate) votes++;
+            if (votes>score) {owner=candidate;score=votes;}
+        }
+        if (owner<0) {
+            /* A face with no old owner must receive a fresh sector ID.
+               Reusing arbitrary old IDs silently swaps room properties. */
+            if (l->sector_count>=INT_MAX-1) break;
+            int inherit=-1;
+            for (int i=0;i<n;i++) {
+                int candidate=old[path[i]];
+                if (candidate>=0 && candidate<l->sector_count) {inherit=candidate;break;}
+            }
+            int new_count=l->sector_count+1;
+            Sector *new_sectors=realloc(l->sectors,(size_t)new_count*sizeof(Sector));
+            unsigned char *new_claimed=realloc(claimed,(size_t)new_count+1);
+            if (!new_sectors || !new_claimed) {
+                if (new_sectors) l->sectors=new_sectors;
+                if (new_claimed) claimed=new_claimed;
+                break;
+            }
+            l->sectors=new_sectors;
+            claimed=new_claimed;
+            owner=l->sector_count++;
+            claimed[owner]=0;
+            l->sectors[owner]=inherit>=0?l->sectors[inherit]:
+                (Sector){.floor_height=0,.ceiling_height=5,
+                         .floor_texture_id=3,.ceiling_texture_id=4};
+        }
+        claimed[owner]=1;
+        for (int i=0;i<n;i++) edge_assign(l,path[i],owner);
     }
-    free(edges); free(seen);
+    free(path);free(seen);free(old);free(claimed);
 }
+
 static int sector_at_point(Level *l,float x,float z,bool create,bool separate) {
     if (l->wall_count<3 || l->wall_count>100000) return -1;
     int *edges=malloc((size_t)l->wall_count*sizeof(int));
@@ -429,20 +482,21 @@ static void editor_set_tool(EditorViewport *editor, EditorTool tool)
     editor->vertex_dragging = false;
     editor->spawn_dragging = false;
     editor->spawn_rotating = false;
+    editor->room_dragging = false;
     SDL_Log("Editor tool: %s", tool == EDITOR_TOOL_VERTEX ? "VERTEX" :
             tool == EDITOR_TOOL_WALL ? "WALL" :
-            tool == EDITOR_TOOL_SECTOR ? "SECTOR" : "SELECT");
+            tool == EDITOR_TOOL_SECTOR ? "SECTOR" : tool == EDITOR_TOOL_ROOM ? "DRAW ROOM" : "SELECT");
 }
 
 // Shared legend content is used for both rendering and mouse hit testing.
 typedef struct EditorLegend {
-    const char *actions[12];
+    const char *actions[14];
     int action_count;
     float width;
     float height;
 } EditorLegend;
 
-static float editor_legend_scroll = 0.0f;
+/* The legend is displayed at full height; no scrolling state is needed. */
 
 static EditorLegend editor_build_legend(const EditorViewport *editor)
 {
@@ -463,13 +517,19 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
             legend.actions[legend.action_count++] = "B  Set back (portal) to active";
             legend.actions[legend.action_count++] = "X  Clear back (solid wall)";
             break;
+        case EDITOR_TOOL_ROOM:
+            legend.actions[legend.action_count++] = "Drag empty grid to draw a room";
+            legend.actions[legend.action_count++] = "Shared edges become portals";
+            legend.actions[legend.action_count++] = "Snap corners to existing vertices";
+            legend.actions[legend.action_count++] = "Right click cancels room";
+            break;
         case EDITOR_TOOL_SECTOR:
-            legend.actions[legend.action_count++] = "Click Room   Select / create sector";
+            legend.actions[legend.action_count++] = "Click Room   Select sector";
             legend.actions[legend.action_count++] = "Shift+Click  Separate room into sector";
             legend.actions[legend.action_count++] = "[ / ]       Previous / next sector";
             legend.actions[legend.action_count++] = "PgUp/PgDn   Raise / lower floor 0.25";
             legend.actions[legend.action_count++] = "Shift+PgUp/Dn  Adjust ceiling 0.25";
-            legend.actions[legend.action_count++] = "Closed rooms become sectors automatically";
+            legend.actions[legend.action_count++] = "Room tool creates sectors automatically";
             break;
         case EDITOR_TOOL_SELECT:
         default:
@@ -482,15 +542,17 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
     }
     const char *tools[] = {
         "1  Select / Move", "2  Vertex / Split Wall",
-        "3  Draw Walls / Auto Portals", "4  Rooms / Sector Heights"
+        "3  Draw Walls / Auto Portals", "4  Select / Edit Sectors",
+        "5  Draw Room (drag rectangle)"
     };
     const char *general[] = {
         "Middle Drag  Pan view", "Wheel        Zoom",
         "G            Toggle grid snap", "Ctrl+S       Save",
-        "Esc          Cancel / Select"
+        "Esc          Exit editor", "Ctrl+Z / Y   Undo / Redo",
+        "H            Toggle sector colors"
     };
     size_t longest = SDL_strlen("ACTIVE TOOL: SECTOR");
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         size_t len = SDL_strlen(tools[i]);
         if (len > longest) longest = len;
     }
@@ -498,7 +560,7 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
         size_t len = SDL_strlen(legend.actions[i]);
         if (len > longest) longest = len;
     }
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 7; ++i) {
         size_t len = SDL_strlen(general[i]);
         if (len > longest) longest = len;
     }
@@ -506,7 +568,7 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
     // Header + tools + actions + general, with section separators.
     /* Match the actual cursor increments in editor_draw_controls.
        Last line starts at y + 283 + action_count*15; reserve 12px below it. */
-    legend.height = 310.0f + legend.action_count * 15.0f;
+    legend.height = 355.0f + legend.action_count * 15.0f;
     return legend;
 }
 
@@ -519,40 +581,51 @@ static bool editor_point_in_panel(const EditorViewport *editor,
     if (mx >= 12.0f && mx <= 12.0f + panel_width &&
         my >= 12.0f && my <= 12.0f + panel_height)
         return true;
-    if (mx >= width - 272.0f && mx <= width - 12.0f &&
-        my >= 12.0f && my <= 270.0f)
+    if (mx >= width - 300.0f && mx <= width - 12.0f &&
+        my >= 12.0f && my <= 12.0f + 64.0f + 5.0f * 24.0f + 12.0f)
         return true;
     return false;
 }
 
 
 /* Right-hand inspector: fixed-size controls with explicit hit targets. */
-#define INSPECTOR_WIDTH 260.0f
+#define INSPECTOR_WIDTH 288.0f
 #define INSPECTOR_TOP 12.0f
 #define INSPECTOR_ROW 24.0f
 #define INSPECTOR_FIRST 64.0f
 #define INSPECTOR_ROWS 7
+#define INSPECTOR_BOTTOM_PAD 12.0f
+
+static int inspector_row_count(int mode) {
+    return mode == 1 ? 2 : mode == 2 ? 5 : mode == 3 ? 5 : mode == 4 ? 5 : 2;
+}
+static float inspector_panel_height(int mode) {
+    return INSPECTOR_FIRST + inspector_row_count(mode) * INSPECTOR_ROW + INSPECTOR_BOTTOM_PAD;
+}
 static float inspector_x(int width) { return (float)width - INSPECTOR_WIDTH - 12.0f; }
 static int inspector_mode(const EditorViewport *ed, const Level *l) {
     if (ed->active_tool == EDITOR_TOOL_WALL && ed->selected_wall >= 0 && ed->selected_wall < l->wall_count) return 2;
-    if (ed->active_tool == EDITOR_TOOL_SECTOR && l->sector_count > 0) return 3;
+    if (ed->active_tool == EDITOR_TOOL_SECTOR && ed->selected_sector >= 0 && ed->selected_sector < l->sector_count) return 3;
     if (ed->spawn_selected && ed->active_tool == EDITOR_TOOL_SELECT) return 4;
     if (ed->selected_vertex >= 0 && ed->selected_vertex < l->vertex_count) return 1;
     return 0;
 }
-static bool inspector_click(EditorViewport *ed, Level *l, int width, float mx, float my) {
+static bool inspector_click(EditorViewport *ed, Level *l, int width, int height, float mx, float my) {
     float x=inspector_x(width);
-    if (mx<x || mx>x+INSPECTOR_WIDTH || my<INSPECTOR_TOP || my>INSPECTOR_TOP+258.0f) return false;
+    int mode=inspector_mode(ed,l);
+    float visible_height=fminf(inspector_panel_height(mode),fmaxf(0.0f,(float)height-24.0f));
+    if (x<12.0f || visible_height<INSPECTOR_FIRST || mx<x || mx>x+INSPECTOR_WIDTH ||
+        my<INSPECTOR_TOP || my>INSPECTOR_TOP+visible_height) return false;
     int row=(int)floorf((my-(INSPECTOR_TOP+INSPECTOR_FIRST))/INSPECTOR_ROW);
-    if (row<0 || row>=INSPECTOR_ROWS) return true;
+    if (row<0 || row>=inspector_row_count(mode) ||
+        INSPECTOR_FIRST+(row+1)*INSPECTOR_ROW>visible_height) return true;
     /* +/- buttons on the right; text remains read-only for other clicks. */
     int delta=0;
-    if (mx>=x+190 && mx<x+218) delta=-1;
-    if (mx>=x+223 && mx<=x+252) delta=1;
+    if (mx>=x+218 && mx<x+246) delta=-1;
+    if (mx>=x+251 && mx<=x+280) delta=1;
     if (!delta) return true;
     bool fine=(SDL_GetModState() & SDL_KMOD_SHIFT)!=0;
     float step=fine?0.1f:1.0f;
-    int mode=inspector_mode(ed,l);
     if (mode==1) {
         Vertex *v=&l->vertices[ed->selected_vertex];
         if (row==0) v->x+=delta*step;
@@ -608,7 +681,271 @@ static bool wall_would_cross(const Level *l, int start, int end) {
     }
     return false;
 }
-void editor_viewport_process_event(
+
+/* Rectangle room builder: reuse vertices and existing walls, then rebuild
+   sector topology once after the complete shape is present. */
+static int room_vertex(Level *l,float x,float z) {
+    for (int i=0;i<l->vertex_count;i++)
+        if (fabsf(l->vertices[i].x-x)<0.0001f && fabsf(l->vertices[i].z-z)<0.0001f) return i;
+    int result=-1;
+    return editor_create_vertex(l,x,z,&result) ? result : -1;
+}
+static bool room_add_wall(Level *l,int a,int b) {
+    if (a<0 || b<0 || a==b) return false;
+    for (int i=0;i<l->wall_count;i++) {
+        Wall w=l->walls[i];
+        if ((w.vertex_start==a && w.vertex_end==b) || (w.vertex_start==b && w.vertex_end==a)) return true;
+    }
+    if (wall_would_cross(l,a,b) || l->wall_count>=INT_MAX-1) return false;
+    Wall *p=realloc(l->walls,(size_t)(l->wall_count+1)*sizeof(Wall));
+    if (!p) return false;
+    l->walls=p;
+    l->walls[l->wall_count++]=(Wall){.vertex_start=a,.vertex_end=b,
+        .front_sector=-1,.back_sector=-1,.texture_id=0};
+    return true;
+}
+/* Room brush supports complete and partial shared edges. Existing walls are
+   split at new corners before edges are inserted, so a shared segment is a
+   single wall with two owners, never overlapping duplicate walls. */
+static bool room_make_rectangle(Level *l,float x1,float z1,float x2,float z2) {
+    float left=fminf(x1,x2),right=fmaxf(x1,x2);
+    float top=fminf(z1,z2),bottom=fmaxf(z1,z2);
+    if (right-left<0.01f || bottom-top<0.01f) return false;
+    /* Reject interior overlap with an existing face, including containment. */
+    const float eps=0.0001f;
+    float cx=(left+right)*0.5f,cz=(top+bottom)*0.5f;
+    if (sector_at_point(l,cx,cz,false,false)>=0) return false;
+    for (int i=0;i<l->wall_count;i++) {
+        Wall w=l->walls[i];
+        Vertex a=l->vertices[w.vertex_start],b=l->vertices[w.vertex_end];
+        float mx=(a.x+b.x)*0.5f,mz=(a.z+b.z)*0.5f;
+        if (mx>left+eps && mx<right-eps && mz>top+eps && mz<bottom-eps) return false;
+    }
+    Vertex corners[4]={{left,top},{right,top},{right,bottom},{left,bottom}};
+    /* Split any wall crossed by a rectangle corner, including partial shares. */
+    for (int k=0;k<4;k++) {
+        for (int i=0;i<l->wall_count;i++) {
+            Wall w=l->walls[i];
+            Vertex a=l->vertices[w.vertex_start],b=l->vertices[w.vertex_end];
+            float dx=b.x-a.x,dz=b.z-a.z,den=dx*dx+dz*dz;
+            if (den<eps*eps) continue;
+            float t=((corners[k].x-a.x)*dx+(corners[k].z-a.z)*dz)/den;
+            float px=a.x+t*dx,pz=a.z+t*dz;
+            if (t>eps && t<1.0f-eps && fabsf(px-corners[k].x)<eps && fabsf(pz-corners[k].z)<eps) {
+                int created=-1;
+                if (!editor_split_wall(l,i,t,&created)) return false;
+                break;
+            }
+        }
+    }
+    int v[4];
+    for (int i=0;i<4;i++) {
+        v[i]=room_vertex(l,corners[i].x,corners[i].z);
+        if (v[i]<0) return false;
+    }
+    /* Connect through any existing vertices on the proposed boundary. */
+    for (int k=0;k<4;k++) {
+        Vertex a=l->vertices[v[k]],b=l->vertices[v[(k+1)%4]];
+        float dx=b.x-a.x,dz=b.z-a.z,den=dx*dx+dz*dz;
+        int current=v[k];
+        for (;;) {
+            int next=-1;
+            float best=2.0f;
+            Vertex from=l->vertices[current];
+            float from_t=((from.x-a.x)*dx+(from.z-a.z)*dz)/den;
+            for (int j=0;j<l->vertex_count;j++) {
+                Vertex p=l->vertices[j];
+                float t=((p.x-a.x)*dx+(p.z-a.z)*dz)/den;
+                float px=a.x+t*dx,pz=a.z+t*dz;
+                if (t<=from_t+eps || t>1.0f+eps || t>=best ||
+                    fabsf(p.x-px)>eps || fabsf(p.z-pz)>eps) continue;
+                next=j;best=t;
+            }
+            if (next<0 || !room_add_wall(l,current,next)) return false;
+            current=next;
+            if (current==v[(k+1)%4]) break;
+        }
+    }
+    auto_assign_closed_faces(l);
+    return sector_at_point(l,cx,cz,false,false)>=0;
+}
+
+/* Deep-copy edit history. Snapshots are owned by the history stack and never
+   alias the live Level's dynamically allocated arrays. */
+#define EDITOR_HISTORY_LIMIT 64
+typedef struct EditorSnapshot {
+    Level level;
+    int selected_vertex, selected_wall, selected_sector;
+    bool spawn_selected;
+} EditorSnapshot;
+static EditorSnapshot undo_stack[EDITOR_HISTORY_LIMIT];
+static EditorSnapshot redo_stack[EDITOR_HISTORY_LIMIT];
+static int undo_count, redo_count;
+static EditorSnapshot drag_start;
+static bool drag_pending;
+
+static void snapshot_dispose(EditorSnapshot *s) {
+    free(s->level.vertices);
+    free(s->level.walls);
+    free(s->level.sectors);
+    memset(s,0,sizeof(*s));
+}
+static bool snapshot_take(EditorSnapshot *s, const Level *l, const EditorViewport *ed) {
+    memset(s,0,sizeof(*s));
+    s->level=*l;
+    s->level.vertices=NULL;
+    s->level.walls=NULL;
+    s->level.sectors=NULL;
+    if (l->vertex_count>0) {
+        s->level.vertices=malloc((size_t)l->vertex_count*sizeof(Vertex));
+        if (!s->level.vertices) goto fail;
+        memcpy(s->level.vertices,l->vertices,(size_t)l->vertex_count*sizeof(Vertex));
+    }
+    if (l->wall_count>0) {
+        s->level.walls=malloc((size_t)l->wall_count*sizeof(Wall));
+        if (!s->level.walls) goto fail;
+        memcpy(s->level.walls,l->walls,(size_t)l->wall_count*sizeof(Wall));
+    }
+    if (l->sector_count>0) {
+        s->level.sectors=malloc((size_t)l->sector_count*sizeof(Sector));
+        if (!s->level.sectors) goto fail;
+        memcpy(s->level.sectors,l->sectors,(size_t)l->sector_count*sizeof(Sector));
+    }
+    s->selected_vertex=ed->selected_vertex;
+    s->selected_wall=ed->selected_wall;
+    s->selected_sector=ed->selected_sector;
+    s->spawn_selected=ed->spawn_selected;
+    return true;
+fail:
+    snapshot_dispose(s);
+    return false;
+}
+static bool snapshot_differs(const EditorSnapshot *s, const Level *l) {
+    if (s->level.vertex_count!=l->vertex_count ||
+        s->level.wall_count!=l->wall_count ||
+        s->level.sector_count!=l->sector_count) return true;
+    if (memcmp(&s->level.player_spawn,&l->player_spawn,sizeof(PlayerSpawn))) return true;
+    if (l->vertex_count && memcmp(s->level.vertices,l->vertices,(size_t)l->vertex_count*sizeof(Vertex))) return true;
+    if (l->wall_count && memcmp(s->level.walls,l->walls,(size_t)l->wall_count*sizeof(Wall))) return true;
+    if (l->sector_count && memcmp(s->level.sectors,l->sectors,(size_t)l->sector_count*sizeof(Sector))) return true;
+    return false;
+}
+static void history_clear(EditorSnapshot *stack,int *count) {
+    for (int i=0;i<*count;i++) snapshot_dispose(&stack[i]);
+    *count=0;
+}
+static void history_push(EditorSnapshot *stack,int *count,EditorSnapshot *s) {
+    if (*count==EDITOR_HISTORY_LIMIT) {
+        snapshot_dispose(&stack[0]);
+        memmove(stack,stack+1,(EDITOR_HISTORY_LIMIT-1)*sizeof(*stack));
+        --*count;
+    }
+    stack[(*count)++]=*s;
+    memset(s,0,sizeof(*s));
+}
+static void history_commit(EditorSnapshot *before,const Level *l) {
+    if (snapshot_differs(before,l)) {
+        history_push(undo_stack,&undo_count,before);
+        history_clear(redo_stack,&redo_count);
+    } else snapshot_dispose(before);
+}
+static void history_apply(EditorSnapshot *s,Level *l,EditorViewport *ed) {
+    free(l->vertices); free(l->walls); free(l->sectors);
+    *l=s->level;
+    ed->selected_vertex=s->selected_vertex;
+    ed->selected_wall=s->selected_wall;
+    ed->selected_sector=s->selected_sector;
+    ed->spawn_selected=s->spawn_selected;
+    ed->vertex_dragging=false;
+    ed->spawn_dragging=false;
+    ed->spawn_rotating=false;
+    ed->wall_start_vertex=-1;
+    memset(s,0,sizeof(*s));
+}
+static void editor_history_reset(void) {
+    history_clear(undo_stack,&undo_count);
+    history_clear(redo_stack,&redo_count);
+    snapshot_dispose(&drag_start);
+    drag_pending=false;
+}
+static void history_step(Level *l,EditorViewport *ed,bool redo) {
+    EditorSnapshot *from=redo?redo_stack:undo_stack;
+    int *from_count=redo?&redo_count:&undo_count;
+    EditorSnapshot *to=redo?undo_stack:redo_stack;
+    int *to_count=redo?&undo_count:&redo_count;
+    if (!*from_count) return;
+    EditorSnapshot now;
+    if (!snapshot_take(&now,l,ed)) return;
+    EditorSnapshot previous=from[--*from_count];
+    memset(&from[*from_count],0,sizeof(EditorSnapshot));
+    history_apply(&previous,l,ed);
+    history_push(to,to_count,&now);
+    SDL_Log("Editor %s: %d undo, %d redo",redo?"redo":"undo",undo_count,redo_count);
+}
+/* Reject moved vertices that introduce zero-length walls, crossings, overlaps
+   or T-junctions. Existing wall/sector references remain stable on valid moves. */
+static bool geometry_valid_after_move(const Level *l) {
+    for (int i=0;i<l->wall_count;i++) {
+        Wall a=l->walls[i];
+        if (a.vertex_start<0 || a.vertex_end<0 ||
+            a.vertex_start>=l->vertex_count || a.vertex_end>=l->vertex_count ||
+            a.vertex_start==a.vertex_end) return false;
+        Vertex p=l->vertices[a.vertex_start],q=l->vertices[a.vertex_end];
+        float dx=p.x-q.x,dz=p.z-q.z;
+        if (dx*dx+dz*dz<0.000001f) return false;
+    }
+    for (int i=0;i<l->vertex_count;i++) for(int j=i+1;j<l->vertex_count;j++) {
+        float dx=l->vertices[i].x-l->vertices[j].x;
+        float dz=l->vertices[i].z-l->vertices[j].z;
+        if (dx*dx+dz*dz<0.000001f) return false;
+    }
+    for (int i=0;i<l->wall_count;i++) {
+        Wall a=l->walls[i]; Vertex p=l->vertices[a.vertex_start],q=l->vertices[a.vertex_end];
+        for(int j=i+1;j<l->wall_count;j++) {
+            Wall b=l->walls[j]; Vertex r=l->vertices[b.vertex_start],s=l->vertices[b.vertex_end];
+            if (orient2(p,q,r)*orient2(p,q,s)<-0.000001f &&
+                orient2(r,s,p)*orient2(r,s,q)<-0.000001f) return false;
+            Vertex pts[4]={p,q,r,s};
+            for(int k=0;k<4;k++) {
+                Vertex v=pts[k],u=k<2?r:p,w=k<2?s:q;
+                if (fabsf(orient2(u,w,v))>0.0001f) continue;
+                float dot=(v.x-u.x)*(v.x-w.x)+(v.z-u.z)*(v.z-w.z);
+                if (dot<-0.0001f) return false;
+            }
+        }
+    }
+    return true;
+}
+static void editor_delete_selection(EditorViewport *ed,Level *l) {
+    if (ed->active_tool==EDITOR_TOOL_WALL && ed->selected_wall>=0 && ed->selected_wall<l->wall_count) {
+        int at=ed->selected_wall;
+        memmove(l->walls+at,l->walls+at+1,(size_t)(l->wall_count-at-1)*sizeof(Wall));
+        --l->wall_count;
+        ed->selected_wall=-1;
+        auto_assign_closed_faces(l);
+        SDL_Log("Deleted wall. Reconnect open boundaries before saving.");
+    } else if (ed->selected_vertex>=0 && ed->selected_vertex<l->vertex_count &&
+               (ed->active_tool==EDITOR_TOOL_SELECT || ed->active_tool==EDITOR_TOOL_VERTEX)) {
+        int at=ed->selected_vertex;
+        for(int i=l->wall_count-1;i>=0;i--) {
+            if(l->walls[i].vertex_start==at || l->walls[i].vertex_end==at) {
+                memmove(l->walls+i,l->walls+i+1,(size_t)(l->wall_count-i-1)*sizeof(Wall));
+                --l->wall_count;
+            }
+        }
+        memmove(l->vertices+at,l->vertices+at+1,(size_t)(l->vertex_count-at-1)*sizeof(Vertex));
+        --l->vertex_count;
+        for(int i=0;i<l->wall_count;i++) {
+            if(l->walls[i].vertex_start>at) --l->walls[i].vertex_start;
+            if(l->walls[i].vertex_end>at) --l->walls[i].vertex_end;
+        }
+        ed->selected_vertex=-1;
+        auto_assign_closed_faces(l);
+        SDL_Log("Deleted vertex and attached walls. Reconnect open boundaries before saving.");
+    }
+}
+
+static void editor_process_event_impl(
     EditorViewport *editor,
     SDL_Renderer *renderer,
     const SDL_Event *event,
@@ -625,10 +962,7 @@ void editor_viewport_process_event(
         float panel_height = fminf(legend.height, fmaxf(0.0f, (float)height - 24.0f));
         if (mouse_x >= 12.0f && mouse_x <= 12.0f + panel_width &&
             mouse_y >= 12.0f && mouse_y <= 12.0f + panel_height) {
-            float max_scroll = fmaxf(0.0f, legend.height - panel_height);
-            editor_legend_scroll = fmaxf(0.0f, fminf(max_scroll,
-                editor_legend_scroll - event->wheel.y * 36.0f));
-            return; /* Wheel over help panel scrolls help, not the map. */
+            return; /* Do not zoom while the pointer is over the legend. */
         }
         if (event->wheel.y != 0) {
             editor->zoom *= event->wheel.y > 0 ? 1.1f : 0.9f;
@@ -644,15 +978,42 @@ void editor_viewport_process_event(
         }
 
         if (event->button.button == SDL_BUTTON_RIGHT &&
+            editor->active_tool == EDITOR_TOOL_ROOM) {editor->room_dragging=false;return;}
+
+        if (event->button.button == SDL_BUTTON_RIGHT &&
             editor->active_tool == EDITOR_TOOL_WALL) {
             editor->wall_start_vertex = -1;
             return;
         }
 
         if (event->button.button == SDL_BUTTON_LEFT) {
-            if (inspector_click(editor, level, width, event->button.x, event->button.y)) return;
+            /* The five tool labels double as clickable tool buttons. */
+            EditorLegend legend=editor_build_legend(editor);
+            float pw=fminf(legend.width,fmaxf(0.0f,(float)width-24.0f));
+            float ph=fminf(legend.height,fmaxf(0.0f,(float)height-24.0f));
+            float ty=event->button.y-12.0f;
+            if (event->button.x>=24.0f && event->button.x<=12.0f+pw &&
+                event->button.y>=12.0f && event->button.y<=12.0f+ph &&
+                ty>=95.0f && ty<170.0f) {
+                int which=(int)((ty-95.0f)/15.0f);
+                if (which>=0 && which<5) editor_set_tool(editor,(EditorTool)which);
+                return;
+            }
+            if (inspector_click(editor, level, width, height, event->button.x, event->button.y)) return;
             if (editor_point_in_panel(editor, event->button.x, event->button.y, width, height)) return;
 
+            if (editor->active_tool == EDITOR_TOOL_ROOM) {
+                screen_to_world(editor,width,height,event->button.x,event->button.y,
+                    &editor->room_start_x,&editor->room_start_z);
+                if (editor->snap_enabled) {
+                    editor->room_start_x=editor_snap_value(editor->room_start_x,editor->grid_size);
+                    editor->room_start_z=editor_snap_value(editor->room_start_z,editor->grid_size);
+                }
+                editor->room_end_x=editor->room_start_x;
+                editor->room_end_z=editor->room_start_z;
+                editor->room_dragging=true;
+                return;
+            }
             if (editor->active_tool == EDITOR_TOOL_VERTEX) {
                 // Clicking an existing vertex does not create a duplicate.
                 int existing = editor_find_vertex(editor, level, width, height,
@@ -715,7 +1076,7 @@ void editor_viewport_process_event(
             if (editor->active_tool == EDITOR_TOOL_SECTOR) {
                 float wx,wz;
                 screen_to_world(editor,width,height,event->button.x,event->button.y,&wx,&wz);
-                int sector=sector_at_point(level,wx,wz,true,
+                int sector=sector_at_point(level,wx,wz,false,
                     (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
                 if (sector>=0) {
                     editor->selected_sector=sector;
@@ -799,12 +1160,39 @@ void editor_viewport_process_event(
         }
 
         if (event->button.button == SDL_BUTTON_LEFT) {
+            if (editor->active_tool==EDITOR_TOOL_ROOM && editor->room_dragging) {
+                screen_to_world(editor,width,height,event->button.x,event->button.y,
+                    &editor->room_end_x,&editor->room_end_z);
+                if (editor->snap_enabled) {
+                    editor->room_end_x=editor_snap_value(editor->room_end_x,editor->grid_size);
+                    editor->room_end_z=editor_snap_value(editor->room_end_z,editor->grid_size);
+                }
+                editor->room_dragging=false;
+                editor->room_failed=!room_make_rectangle(level,editor->room_start_x,editor->room_start_z,
+                    editor->room_end_x,editor->room_end_z);
+                if (editor->room_failed)
+                    SDL_Log("Room not created: check overlap, alignment, or wall junctions");
+                else {
+                    float cx=(editor->room_start_x+editor->room_end_x)*0.5f;
+                    float cz=(editor->room_start_z+editor->room_end_z)*0.5f;
+                    int sector=sector_at_point(level,cx,cz,false,false);
+                    if (sector>=0) editor->selected_sector=sector;
+                }
+            }
             editor->spawn_dragging = false;
             editor->vertex_dragging = false;
         }
     }
 
     if (event->type == SDL_EVENT_MOUSE_MOTION) {
+        if (editor->room_dragging) {
+            screen_to_world(editor,width,height,event->motion.x,event->motion.y,
+                &editor->room_end_x,&editor->room_end_z);
+            if (editor->snap_enabled) {
+                editor->room_end_x=editor_snap_value(editor->room_end_x,editor->grid_size);
+                editor->room_end_z=editor_snap_value(editor->room_end_z,editor->grid_size);
+            }
+        }
         if (editor->panning) {
             editor->camera_x -= event->motion.xrel / editor->zoom;
             editor->camera_z -= event->motion.yrel / editor->zoom;
@@ -853,8 +1241,12 @@ void editor_viewport_process_event(
                 new_z = editor_snap_value(new_z, editor->grid_size);
             }
 
+            float old_x=vertex->x,old_z=vertex->z;
             vertex->x = new_x;
             vertex->z = new_z;
+            if (!geometry_valid_after_move(level)) {
+                vertex->x = old_x; vertex->z = old_z;
+            }
         }
         if (editor->spawn_rotating) {
             float sx, sy;
@@ -880,6 +1272,8 @@ void editor_viewport_process_event(
             case SDL_SCANCODE_2: editor_set_tool(editor, EDITOR_TOOL_VERTEX); return;
             case SDL_SCANCODE_3: editor_set_tool(editor, EDITOR_TOOL_WALL); return;
             case SDL_SCANCODE_4: editor_set_tool(editor, EDITOR_TOOL_SECTOR); return;
+            case SDL_SCANCODE_5: editor_set_tool(editor, EDITOR_TOOL_ROOM); return;
+            case SDL_SCANCODE_H: editor->show_sector_fill=!editor->show_sector_fill;return;
             case SDL_SCANCODE_ESCAPE:
                 if (editor->active_tool == EDITOR_TOOL_WALL &&
                     editor->wall_start_vertex >= 0) {
@@ -971,6 +1365,59 @@ void editor_viewport_process_event(
     }
 }
 
+
+void editor_viewport_process_event(EditorViewport *ed,SDL_Renderer *renderer,
+                                   const SDL_Event *event,Level *l) {
+    if (event->type==SDL_EVENT_KEY_DOWN && !event->key.repeat &&
+        (event->key.mod & SDL_KMOD_CTRL)) {
+        if (event->key.scancode==SDL_SCANCODE_Z || event->key.scancode==SDL_SCANCODE_Y) {
+            if (drag_pending) {
+                history_commit(&drag_start,l);
+                drag_pending=false;
+            }
+            bool redo=event->key.scancode==SDL_SCANCODE_Y ||
+                      (event->key.scancode==SDL_SCANCODE_Z && (event->key.mod & SDL_KMOD_SHIFT));
+            history_step(l,ed,redo);
+            return;
+        }
+    }
+    bool down=event->type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
+              event->button.button==SDL_BUTTON_LEFT;
+    bool up=event->type==SDL_EVENT_MOUSE_BUTTON_UP &&
+            event->button.button==SDL_BUTTON_LEFT;
+    bool key=event->type==SDL_EVENT_KEY_DOWN && !event->key.repeat;
+    EditorSnapshot before;
+    bool captured=(down || (up && ed->active_tool==EDITOR_TOOL_ROOM && ed->room_dragging) ||
+                   (key && event->key.scancode!=SDL_SCANCODE_R)) &&
+                  snapshot_take(&before,l,ed);
+    if (key && (event->key.scancode==SDL_SCANCODE_DELETE ||
+                event->key.scancode==SDL_SCANCODE_BACKSPACE)) {
+        editor_delete_selection(ed,l);
+    } else {
+        editor_process_event_impl(ed,renderer,event,l);
+    }
+    if (captured) {
+        if (up && ed->active_tool==EDITOR_TOOL_ROOM && ed->room_failed) {
+            history_apply(&before,l,ed);
+            ed->room_failed=false;
+        } else if (geometry_valid_after_move(&before.level) &&
+            !geometry_valid_after_move(l) && snapshot_differs(&before,l)) {
+            /* Do not let inspector coordinates or other edits corrupt the map. */
+            history_apply(&before,l,ed);
+            SDL_Log("Edit rejected: overlapping or intersecting geometry");
+        } else if (down && (ed->vertex_dragging || ed->spawn_dragging)) {
+            if (drag_pending) snapshot_dispose(&drag_start);
+            drag_start=before;
+            drag_pending=true;
+        } else history_commit(&before,l);
+    }
+    if (up && drag_pending) {
+        if (ed->selected_vertex>=0 && geometry_valid_after_move(l)) auto_assign_closed_faces(l);
+        history_commit(&drag_start,l);
+        drag_pending=false;
+    }
+}
+
 static void editor_draw_grid(
     SDL_Renderer *renderer,
     const EditorViewport *editor,
@@ -1000,6 +1447,82 @@ static void editor_draw_grid(
     for (float y = start_y; y < height; y += spacing) {
         SDL_RenderLine(renderer, 0, y, (float)width, y);
     }
+}
+
+/* Filled sectors are drawn as clipped horizontal scanlines, so concave
+   rooms display correctly without depending on triangulation. */
+static void editor_draw_sector_fills(SDL_Renderer *r,const EditorViewport *ed,
+                                     const Level *l,int width,int height) {
+    if (!ed->show_sector_fill || l->wall_count<3 || l->wall_count>100000) return;
+    int *edges=malloc((size_t)l->wall_count*sizeof(int));
+    unsigned char *seen=calloc((size_t)l->wall_count*2,1);
+    float *crossings=malloc((size_t)l->wall_count*sizeof(float));
+    if (!edges || !seen || !crossings) {free(edges);free(seen);free(crossings);return;}
+    SDL_SetRenderDrawBlendMode(r,SDL_BLENDMODE_BLEND);
+    for (int e=0;e<l->wall_count*2;e++) {
+        if (seen[e]) continue;
+        double area=0;
+        int n=trace_face(l,e,edges,&area);
+        if (n<=0) {seen[e]=1;continue;}
+        for (int i=0;i<n;i++) seen[edges[i]]=1;
+        int sector=edge_sector(l,edges[0]);
+        if (sector<0 || sector>=l->sector_count) continue;
+        bool selected=sector==ed->selected_sector;
+        static const Uint8 palette[][3]={{47,150,204},{105,165,90},{176,117,190},
+            {195,137,67},{75,170,161},{185,100,112}};
+        const Uint8 *color=palette[sector%6];
+        SDL_SetRenderDrawColor(r,color[0],color[1],color[2],selected?112:42);
+        float min_y=(float)height,max_y=0;
+        for (int i=0;i<n;i++) {
+            Vertex v=l->vertices[edge_origin(l,edges[i])];float sx,sy;
+            world_to_screen(ed,v.x,v.z,width,height,&sx,&sy);
+            if (sy<min_y) min_y=sy;
+            if (sy>max_y) max_y=sy;
+        }
+        int start=(int)fmaxf(0,ceilf(min_y)),end=(int)fminf((float)height-1,floorf(max_y));
+        for (int y=start;y<=end;y+=2) {
+            int count=0;
+            for (int i=0;i<n;i++) {
+                Vertex a=l->vertices[edge_origin(l,edges[i])];
+                Vertex b=l->vertices[edge_target(l,edges[i])];
+                float ax,ay,bx,by;
+                world_to_screen(ed,a.x,a.z,width,height,&ax,&ay);
+                world_to_screen(ed,b.x,b.z,width,height,&bx,&by);
+                if ((ay<=y && by>y)||(by<=y && ay>y))
+                    crossings[count++]=ax+((float)y-ay)*(bx-ax)/(by-ay);
+            }
+            for (int i=1;i<count;i++) {
+                float x=crossings[i];int j=i-1;
+                while (j>=0 && crossings[j]>x) {crossings[j+1]=crossings[j];j--;}
+                crossings[j+1]=x;
+            }
+            for (int i=0;i+1<count;i+=2)
+                SDL_RenderLine(r,fmaxf(0,crossings[i]),(float)y,
+                    fminf((float)width,crossings[i+1]),(float)y);
+        }
+        if (selected) {
+            SDL_SetRenderDrawColor(r,255,220,90,255);
+            for (int i=0;i<n;i++) {
+                Vertex a=l->vertices[edge_origin(l,edges[i])];
+                Vertex b=l->vertices[edge_target(l,edges[i])];
+                float ax,ay,bx,by;
+                world_to_screen(ed,a.x,a.z,width,height,&ax,&ay);
+                world_to_screen(ed,b.x,b.z,width,height,&bx,&by);
+                SDL_RenderLine(r,ax,ay,bx,by);
+            }
+        }
+    }
+    free(edges);free(seen);free(crossings);
+}
+static void editor_draw_room_preview(SDL_Renderer *r,const EditorViewport *ed,int width,int height) {
+    if (!ed->room_dragging) return;
+    float ax,ay,bx,by;
+    world_to_screen(ed,ed->room_start_x,ed->room_start_z,width,height,&ax,&ay);
+    world_to_screen(ed,ed->room_end_x,ed->room_end_z,width,height,&bx,&by);
+    SDL_FRect rect={fminf(ax,bx),fminf(ay,by),fabsf(bx-ax),fabsf(by-ay)};
+    SDL_SetRenderDrawBlendMode(r,SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r,65,195,235,60);SDL_RenderFillRect(r,&rect);
+    SDL_SetRenderDrawColor(r,75,210,245,255);SDL_RenderRect(r,&rect);
 }
 
 static void editor_draw_walls(
@@ -1134,8 +1657,6 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
     float visible_width = fminf(legend.width, fmaxf(0.0f, (float)width - 24.0f));
     float visible_height = fminf(legend.height, fmaxf(0.0f, (float)height - 24.0f));
     if (visible_width <= 0.0f || visible_height <= 0.0f) return;
-    float max_scroll = fmaxf(0.0f, legend.height - visible_height);
-    editor_legend_scroll = fmaxf(0.0f, fminf(editor_legend_scroll, max_scroll));
     SDL_FRect panel = { x, 12.0f, visible_width, visible_height };
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer, 12, 16, 24, 230);
@@ -1148,12 +1669,12 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
                       (int)visible_height - 2 };
     if (clip.w <= 0 || clip.h <= 0) return;
     SDL_SetRenderClipRect(renderer, &clip);
-    const float y = 12.0f - editor_legend_scroll;
+    const float y = 12.0f;
     SDL_SetRenderDrawColor(renderer, 255, 215, 95, 255);
     SDL_RenderDebugText(renderer, x + pad, y + 12.0f, "LEVEL EDITOR");
     const char *tool_name = editor->active_tool == EDITOR_TOOL_VERTEX ? "VERTEX" :
         editor->active_tool == EDITOR_TOOL_WALL ? "WALL" :
-        editor->active_tool == EDITOR_TOOL_SECTOR ? "SECTOR" : "SELECT";
+        editor->active_tool == EDITOR_TOOL_SECTOR ? "SECTOR" : editor->active_tool == EDITOR_TOOL_ROOM ? "DRAW ROOM" : "SELECT";
     char line[96];
     snprintf(line, sizeof(line), "ACTIVE TOOL: %s", tool_name);
     SDL_RenderDebugText(renderer, x + pad, y + 29.0f, line);
@@ -1163,6 +1684,7 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
         editor->active_tool == EDITOR_TOOL_WALL ?
             (editor->wall_start_vertex >= 0 ? "Choose the ending vertex" : "Choose the starting vertex") :
         editor->active_tool == EDITOR_TOOL_SECTOR ? "Click room to select; edit heights" :
+        editor->active_tool == EDITOR_TOOL_ROOM ? "Drag to create a closed room" :
         "Select and move geometry";
     SDL_RenderDebugText(renderer, x + pad, y + 46.0f, hint);
 
@@ -1171,13 +1693,14 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
     SDL_RenderLine(renderer, x + pad, cursor, x + visible_width - pad, cursor);
     cursor += 10.0f;
     SDL_SetRenderDrawColor(renderer, 255, 215, 95, 255);
-    SDL_RenderDebugText(renderer, x + pad, cursor, "TOOLS  (1-4)");
+    SDL_RenderDebugText(renderer, x + pad, cursor, "TOOLS  (1-5)");
     cursor += 17.0f;
     const char *tools[] = {
         "1  Select / Move", "2  Vertex / Split Wall",
-        "3  Draw Walls / Auto Portals", "4  Rooms / Sector Heights"
+        "3  Draw Walls / Auto Portals", "4  Select / Edit Sectors",
+        "5  Draw Room (drag rectangle)"
     };
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         SDL_SetRenderDrawColor(renderer, i == (int)editor->active_tool ? 255 : 220,
             i == (int)editor->active_tool ? 215 : 225,
             i == (int)editor->active_tool ? 95 : 235, 255);
@@ -1207,22 +1730,14 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
     const char *general[] = {
         "Middle Drag  Pan view", "Wheel        Zoom",
         "G            Toggle grid snap", "Ctrl+S       Save",
-        "Esc          Cancel / Select"
+        "Esc          Exit editor", "Ctrl+Z / Y   Undo / Redo",
+        "H            Toggle sector colors"
     };
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 7; ++i) {
         SDL_RenderDebugText(renderer, x + pad, cursor, general[i]);
         cursor += 15.0f;
     }
     SDL_SetRenderClipRect(renderer, NULL);
-    if (max_scroll > 0.0f) {
-        /* Scrollbar shows that more controls are available below. */
-        float track = visible_height - 8.0f;
-        float thumb_height = fmaxf(20.0f, track * visible_height / legend.height);
-        float thumb_y = 16.0f + (track - thumb_height) * editor_legend_scroll / max_scroll;
-        SDL_FRect thumb = { x + visible_width - 5.0f, thumb_y, 2.0f, thumb_height };
-        SDL_SetRenderDrawColor(renderer, 150, 175, 200, 230);
-        SDL_RenderFillRect(renderer, &thumb);
-    }
 }
 
 static void editor_draw_properties(SDL_Renderer *renderer,
@@ -1230,19 +1745,23 @@ static void editor_draw_properties(SDL_Renderer *renderer,
     int width,height;
     if (!SDL_GetRenderOutputSize(renderer,&width,&height)) return;
     float x=inspector_x(width),y=INSPECTOR_TOP;
-    if (x<12.0f || height<290) return;
-    SDL_FRect bg={x,y,INSPECTOR_WIDTH,258.0f};
+    int mode=inspector_mode(editor,level);
+    float panel_height=fminf(inspector_panel_height(mode),fmaxf(0.0f,(float)height-24.0f));
+    if (x<12.0f || panel_height<INSPECTOR_FIRST) return;
+    SDL_FRect bg={x,y,INSPECTOR_WIDTH,panel_height};
     SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer,12,16,24,238);
     SDL_RenderFillRect(renderer,&bg);
     SDL_SetRenderDrawColor(renderer,95,110,135,255);
     SDL_RenderRect(renderer,&bg);
-    int mode=inspector_mode(editor,level);
+    SDL_Rect inspector_clip={(int)x+1,(int)y+1,(int)INSPECTOR_WIDTH-2,(int)panel_height-2};
+    SDL_SetRenderClipRect(renderer,&inspector_clip);
     const char *heading=mode==1?"VERTEX":mode==2?"WALL":mode==3?"SECTOR":mode==4?"PLAYER SPAWN":"PROPERTIES";
     SDL_SetRenderDrawColor(renderer,255,215,95,255);
     SDL_RenderDebugText(renderer,x+12,y+12,heading);
     SDL_SetRenderDrawColor(renderer,175,190,205,255);
-    SDL_RenderDebugText(renderer,x+12,y+33,"Click - / + to edit  |  Shift: fine");
+    SDL_RenderDebugText(renderer,x+12,y+30,"Click - / + to edit");
+    SDL_RenderDebugText(renderer,x+12,y+44,"Shift: fine adjustments");
     char rows[INSPECTOR_ROWS][80]={{0}};
     int count=0;
     if(mode==1) {
@@ -1278,18 +1797,23 @@ static void editor_draw_properties(SDL_Renderer *renderer,
     }
     for(int i=0;i<count;i++) {
         float yy=y+INSPECTOR_FIRST+i*INSPECTOR_ROW;
+        if (yy+INSPECTOR_ROW>y+panel_height) break;
         SDL_SetRenderDrawColor(renderer,220,225,235,255);
-        SDL_RenderDebugText(renderer,x+12,yy+5,rows[i]);
+        /* SDL debug font is 8 px per glyph. Keep text clear of the buttons. */
+        char visible_label[25];
+        snprintf(visible_label,sizeof(visible_label),"%.24s",rows[i]);
+        SDL_RenderDebugText(renderer,x+12,yy+5,visible_label);
         bool editable=(mode==1 && i<2)||(mode==2 && i<3)||
                       (mode==3 && i<5)||(mode==4 && i<5);
         if(!editable)continue;
-        SDL_FRect minus={x+190,yy,28,19},plus={x+223,yy,29,19};
+        SDL_FRect minus={x+218,yy,28,19},plus={x+251,yy,29,19};
         SDL_SetRenderDrawColor(renderer,53,65,82,255);
         SDL_RenderFillRect(renderer,&minus); SDL_RenderFillRect(renderer,&plus);
         SDL_SetRenderDrawColor(renderer,255,215,95,255);
-        SDL_RenderDebugText(renderer,x+200,yy+5,"-");
-        SDL_RenderDebugText(renderer,x+234,yy+5,"+");
+        SDL_RenderDebugText(renderer,x+228,yy+5,"-");
+        SDL_RenderDebugText(renderer,x+262,yy+5,"+");
     }
+    SDL_SetRenderClipRect(renderer,NULL);
 }
 
 void editor_viewport_show_save_notification(
@@ -1324,7 +1848,7 @@ static void editor_draw_save_notification(
     const float panel_height = 60.0f;
 
     const float x = (float)width - panel_width - 12.0f;
-    const float y = 215.0f;
+    const float y = fminf((float)height - panel_height - 12.0f, 320.0f);
 
     SDL_FRect panel = {
         x, y, panel_width, panel_height
@@ -1378,6 +1902,8 @@ void editor_viewport_render(
     SDL_RenderClear(renderer);
 
     editor_draw_grid(renderer, editor, width, height);
+    editor_draw_sector_fills(renderer,editor,level,width,height);
+    editor_draw_room_preview(renderer,editor,width,height);
     editor_draw_walls(renderer, editor, level, width, height);
     editor_draw_vertices(renderer, editor, level, width, height);
     editor_draw_spawn(renderer, editor, level, width, height);

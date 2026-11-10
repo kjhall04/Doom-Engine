@@ -11,7 +11,8 @@ typedef enum EditorTool {
     EDITOR_TOOL_SELECT = 0,
     EDITOR_TOOL_VERTEX,
     EDITOR_TOOL_WALL,
-    EDITOR_TOOL_SECTOR
+    EDITOR_TOOL_SECTOR,
+    EDITOR_TOOL_ROOM
 } EditorTool;
 
 typedef struct EditorViewport {
@@ -40,6 +41,11 @@ typedef struct EditorViewport {
     int wall_start_vertex;
     int selected_wall;
     int selected_sector;
+    bool room_dragging;
+    bool room_failed;
+    float room_start_x, room_start_z;
+    float room_end_x, room_end_z;
+    bool show_sector_fill;
 } EditorViewport;
 
 void editor_viewport_init(EditorViewport *viewport);
