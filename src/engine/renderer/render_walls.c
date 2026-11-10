@@ -211,19 +211,13 @@ static uint32_t wall_sample_procedural(float u, float v) {
 
 
 static uint32_t wall_sample_texture(
-    int texture_id,
+    const Texture *texture,
     float u,
     float v
 ) {
-    const Texture *texture = texture_manager_get(
-        buffers.textures,
-        texture_id
-    );
-
     if (texture != NULL) {
         return texture_sample(texture, u, v);
     }
-
     return wall_sample_procedural(u, v);
 }
 
@@ -234,6 +228,8 @@ static void wall_rasterize_triangle(
     const ScreenVertex *c,
     int texture_id
 ) {
+    /* Resolve the wall texture once per triangle, not per shaded pixel. */
+    const Texture *texture = texture_manager_get(buffers.textures, texture_id);
     float area = wall_edge(a, b, c->x, c->y);
 
     if (!isfinite(area) || fabsf(area) < 0.00001f) {
@@ -348,7 +344,7 @@ static void wall_rasterize_triangle(
 
                         buffers.depth[index] = inverse_z;
                         buffers.pixels[index] = wall_sample_texture(
-                                                                texture_id,
+                                                                texture,
                                                                 u,
                                                                 v
                                                             );
@@ -532,6 +528,34 @@ static void wall_draw_section(
     }
 }
 
+/* Conservative six-plane frustum rejection for a wall's full vertical
+ * extent. Reject only when ALL four corners lie outside the same plane.
+ * This preserves partially visible and near-plane-clipped walls.
+ * The vertical frustum uses the renderer's horizontal 90-degree FOV. */
+static bool wall_outside_camera_frustum(
+    const Player *player, const Vertex *start, const Vertex *end,
+    float bottom, float top
+) {
+    RenderCameraPoint corners[4] = {
+        render_camera_transform(player, start->x, bottom, start->z),
+        render_camera_transform(player, end->x, bottom, end->z),
+        render_camera_transform(player, end->x, top, end->z),
+        render_camera_transform(player, start->x, top, start->z)
+    };
+    float horizontal = tanf((WALL_FOV * 0.5f) * (WALL_PI / 180.0f));
+    float vertical = horizontal * (float)buffers.height / (float)buffers.width;
+    bool behind = true, left = true, right = true, above = true, below = true;
+    for (int i = 0; i < 4; ++i) {
+        const RenderCameraPoint *p = &corners[i];
+        if (p->z >= WALL_NEAR_PLANE) behind = false;
+        if (p->x >= -p->z * horizontal) left = false;
+        if (p->x <=  p->z * horizontal) right = false;
+        if (p->y <=  p->z * vertical) above = false;
+        if (p->y >= -p->z * vertical) below = false;
+    }
+    return behind || left || right || above || below;
+}
+
 static void wall_draw_segment(
     const Player *player,
     const Wall *wall,
@@ -554,6 +578,20 @@ static void wall_draw_segment(
 
     const Sector *front =
         &level->sectors[wall->front_sector];
+
+    /* Use the union of both sectors' heights so this early test cannot
+     * discard a visible upper/lower portal wall section. */
+    float bound_bottom = front->floor_height;
+    float bound_top = front->ceiling_height;
+    if (wall->back_sector >= 0 && wall->back_sector < level->sector_count) {
+        const Sector *other = &level->sectors[wall->back_sector];
+        bound_bottom = fminf(bound_bottom, other->floor_height);
+        bound_top = fmaxf(bound_top, other->ceiling_height);
+    }
+    if (wall_outside_camera_frustum(player, start, end,
+                                    bound_bottom, bound_top)) {
+        return;
+    }
 
     if (wall->back_sector < 0) {
         wall_draw_section(
@@ -679,6 +717,7 @@ void render_walls_draw_solid(
     wall_clip_vertical_reset();
 
     static Uint64 clear_ticks = 0;
+    static Uint64 plane_ticks = 0;
     static Uint64 raster_ticks = 0;
     static Uint64 upload_ticks = 0;
     static Uint64 draw_ticks = 0;
@@ -700,6 +739,10 @@ void render_walls_draw_solid(
         buffers.pixels[i] = COLOR_BACKGROUND;
     }
 
+    Uint64 stage_end = SDL_GetPerformanceCounter();
+    clear_ticks += stage_end - stage_start;
+    stage_start = stage_end;
+
     /* Render sector floors and ceilings using shared inverse depth. */
     render_planes_draw(
         player,
@@ -711,8 +754,8 @@ void render_walls_draw_solid(
         buffers.height
     );
     
-    Uint64 stage_end = SDL_GetPerformanceCounter();
-    clear_ticks += stage_end - stage_start;
+    stage_end = SDL_GetPerformanceCounter();
+    plane_ticks += stage_end - stage_start;
 
     stage_start = SDL_GetPerformanceCounter();
 
@@ -760,17 +803,19 @@ void render_walls_draw_solid(
         double divisor = (double)sample_frames;
 
         double clear_ms = (double)clear_ticks * ticks_to_ms / divisor;
+        double plane_ms = (double)plane_ticks * ticks_to_ms / divisor;
         double raster_ms = (double)raster_ticks * ticks_to_ms / divisor;
         double upload_ms = (double)upload_ticks * ticks_to_ms / divisor;
         double draw_ms = (double)draw_ticks * ticks_to_ms / divisor;
-        double total_ms = clear_ms + raster_ms + upload_ms + draw_ms;
+        double total_ms = clear_ms + plane_ms + raster_ms + upload_ms + draw_ms;
 
         SDL_Log(
             "Wall renderer average over %u frames | "
-            "Clear: %.2f ms | Rasterize: %.2f ms | "
+            "Clear: %.2f ms | Planes: %.2f ms | Walls: %.2f ms | "
             "Upload: %.2f ms | Draw: %.2f ms | Total: %.2f ms",
             sample_frames,
             clear_ms,
+            plane_ms,
             raster_ms,
             upload_ms,
             draw_ms,
@@ -778,6 +823,7 @@ void render_walls_draw_solid(
         );
 
         clear_ticks = 0;
+        plane_ticks = 0;
         raster_ticks = 0;
         upload_ticks = 0;
         draw_ticks = 0;

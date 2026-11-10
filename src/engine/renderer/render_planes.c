@@ -152,43 +152,38 @@ static void raster_triangle(
     int x1 = (int)fminf((float)(width-1), ceilf(maxx));
     int y0 = (int)fmaxf(0, floorf(miny));
     int y1 = (int)fminf((float)(height-1), ceilf(maxy));
-    float inv_area = 1.0f / area;
+    /* Incremental edge evaluation: each pixel advances three additions
+       instead of recomputing three 2D cross products. */
+    const float inv_area = 1.0f / area;
+    const float sx = (float)x0 + 0.5f;
+    const float sy = (float)y0 + 0.5f;
+    float row0 = screen_edge(b,c,sx,sy);
+    float row1 = screen_edge(c,a,sx,sy);
+    float row2 = screen_edge(a,b,sx,sy);
+    const float dx0 = -(c.y-b.y), dx1 = -(a.y-c.y), dx2 = -(b.y-a.y);
+    const float dy0 = c.x-b.x, dy1 = a.x-c.x, dy2 = b.x-a.x;
+    const float edge_epsilon = -0.00001f;
     for (int y = y0; y <= y1; ++y) {
-        size_t offset = (size_t)y * (size_t)width;
-        for (int x = x0; x <= x1; ++x) {
-            float px = x + 0.5f, py = y + 0.5f;
-            float w0 = screen_edge(b,c,px,py);
-            float w1 = screen_edge(c,a,px,py);
-            float w2 = screen_edge(a,b,px,py);
-            if (w0 < -0.00001f || w1 < -0.00001f || w2 < -0.00001f) continue;
-            float iz = (w0*a.inverse_z + w1*b.inverse_z + w2*c.inverse_z)*inv_area;
-            size_t index = offset + (size_t)x;
-            if (iz > depth[index] && isfinite(iz) && iz > 0.0f) {
-
-                float u_over_z =
-                    (w0 * a.u_over_z +
-                    w1 * b.u_over_z +
-                    w2 * c.u_over_z) * inv_area;
-
-                float v_over_z =
-                    (w0 * a.v_over_z +
-                    w1 * b.v_over_z +
-                    w2 * c.v_over_z) * inv_area;
-
-                float u = u_over_z / iz;
-                float v = v_over_z / iz;
-
-                uint32_t color = plane_sample_texture(
-                    texture,
-                    u,
-                    v,
-                    is_ceiling
-                );
-
-                depth[index] = iz;
-                pixels[index] = color;
+        size_t index = (size_t)y * (size_t)width + (size_t)x0;
+        float w0 = row0, w1 = row1, w2 = row2;
+        for (int x = x0; x <= x1; ++x, ++index) {
+            if (w0 >= edge_epsilon && w1 >= edge_epsilon && w2 >= edge_epsilon) {
+                const float iz = (w0*a.inverse_z + w1*b.inverse_z +
+                                  w2*c.inverse_z) * inv_area;
+                if (iz > depth[index] && iz > 0.0f && isfinite(iz)) {
+                    const float u_over_z = (w0*a.u_over_z + w1*b.u_over_z +
+                                            w2*c.u_over_z) * inv_area;
+                    const float v_over_z = (w0*a.v_over_z + w1*b.v_over_z +
+                                            w2*c.v_over_z) * inv_area;
+                    const float u = u_over_z / iz;
+                    const float v = v_over_z / iz;
+                    pixels[index] = plane_sample_texture(texture,u,v,is_ceiling);
+                    depth[index] = iz;
+                }
             }
+            w0 += dx0; w1 += dx1; w2 += dx2;
         }
+        row0 += dy0; row1 += dy1; row2 += dy2;
     }
 }
 
@@ -332,6 +327,11 @@ void render_planes_draw(
         }
         if (fabsf(signed_area) < 0.000001f) continue;
         float orientation = signed_area > 0 ? 1.0f : -1.0f;
+        const Sector *sector_data = &level->sectors[sector];
+        const Texture *floor_texture = texture_manager_get(
+            textures, sector_data->floor_texture_id);
+        const Texture *ceiling_texture = texture_manager_get(
+            textures, sector_data->ceiling_texture_id);
         int remaining[PLANE_MAX_VERTICES];
         for (int i = 0; i < n; ++i) remaining[i] = i;
         int length = n;
@@ -352,22 +352,10 @@ void render_planes_draw(
                     }
                 }
                 if (contains) continue;
-                const Sector *s = &level->sectors[sector];
-
-                const Texture *floor_texture = texture_manager_get(
-                    textures,
-                    s->floor_texture_id
-                );
-
-                const Texture *ceiling_texture = texture_manager_get(
-                    textures,
-                    s->ceiling_texture_id
-                );
-
                 draw_world_triangle(
                     player,
                     a, b, c,
-                    s->floor_height,
+                    sector_data->floor_height,
                     false,
                     floor_texture,
                     pixels,
@@ -379,7 +367,7 @@ void render_planes_draw(
                 draw_world_triangle(
                     player,
                     a, b, c,
-                    s->ceiling_height,
+                    sector_data->ceiling_height,
                     true,
                     ceiling_texture,
                     pixels,
