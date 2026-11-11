@@ -10,6 +10,9 @@ typedef struct RenderPortalClip {
     int width, height;
     int left, right;
     int *top, *bottom;
+    /* Smallest row range that contains every visible column of the window.
+     * Lets the rasterizer skip rows that no column can show. */
+    int y_min, y_max;
 } RenderPortalClip;
 
 typedef struct PortalVertex {

@@ -3,6 +3,7 @@
 #include "render_portals.h"
 #include "render_sector_traversal.h"
 #include "render_planes.h"
+#include "render_raster.h"
 #include "engine/textures/texture.h"
 
 #include <SDL3/SDL_timer.h>
@@ -20,15 +21,6 @@
 
 #define COLOR_BACKGROUND 0xFF1C1414u
 #define COLOR_WALL       0xFFDCDCDCu
-
-typedef struct ScreenVertex {
-    float x;
-    float y;
-    float inverse_z;
-
-    float u_over_z;
-    float v_over_z;
-} ScreenVertex;
 
 typedef struct WallTextureVertex {
     float x;
@@ -52,6 +44,11 @@ typedef struct WallRenderBuffers {
     int *clip_top;
     int *clip_bottom;
 
+    float focal_length;
+
+    RenderSectorVisit *visits;
+    int visit_capacity;
+
     const TextureManager *textures;
 } WallRenderBuffers;
 
@@ -60,13 +57,17 @@ static WallRenderBuffers buffers = {0};
 typedef struct WallClipRange {
     int left;
     int right;
+    int top;
+    int bottom;
 } WallClipRange;
 
-static WallClipRange wall_clip_range = {0, 0};
+static WallClipRange wall_clip_range = {0, 0, 0, 0};
 
-static void wall_clip_reset(int screen_width) {
+static void wall_clip_reset(int screen_width, int screen_height) {
     wall_clip_range.left = 0;
     wall_clip_range.right = screen_width - 1;
+    wall_clip_range.top = 0;
+    wall_clip_range.bottom = screen_height - 1;
 }
 
 static void wall_clip_vertical_reset(void) {
@@ -86,7 +87,10 @@ static void wall_release_buffers(void) {
 
     free(buffers.clip_top);
     free(buffers.clip_bottom);
+    free(buffers.visits);
 
+    buffers.visits = NULL;
+    buffers.visit_capacity = 0;
     buffers.clip_top = NULL;
     buffers.clip_bottom = NULL;
     buffers.texture = NULL;
@@ -164,21 +168,12 @@ static bool wall_prepare_buffers(
     buffers.renderer = renderer;
     buffers.width = width;
     buffers.height = height;
+    buffers.focal_length =
+        (width * 0.5f) / tanf((WALL_FOV * 0.5f) * (WALL_PI / 180.0f));
 
     return true;
 }
 
-
-
-static float wall_edge(
-    const ScreenVertex *a,
-    const ScreenVertex *b,
-    float x,
-    float y
-) {
-    return (b->x - a->x) * (y - a->y)
-         - (b->y - a->y) * (x - a->x);
-}
 
 
 static uint32_t wall_sample_procedural(float u, float v) {
@@ -207,171 +202,6 @@ static uint32_t wall_sample_procedural(float u, float v) {
     return (brick & 1)
         ? 0xFF93665Au
         : 0xFFB27B65u;
-}
-
-
-static uint32_t wall_sample_texture(
-    const Texture *texture,
-    float u,
-    float v
-) {
-    if (texture != NULL) {
-        return texture_sample(texture, u, v);
-    }
-    return wall_sample_procedural(u, v);
-}
-
-
-/* Cumulative counters, reset after each 60-frame report. */
-static unsigned long long wall_bbox_pixels = 0;
-static unsigned long long wall_covered_pixels = 0;
-static unsigned long long wall_depth_passes = 0;
-static unsigned long long wall_triangles = 0;
-
-static void wall_rasterize_triangle(
-    const ScreenVertex *a,
-    const ScreenVertex *b,
-    const ScreenVertex *c,
-    int texture_id
-) {
-    /* Resolve the wall texture once per triangle, not per shaded pixel. */
-    const Texture *texture = texture_manager_get(buffers.textures, texture_id);
-    float area = wall_edge(a, b, c->x, c->y);
-
-    if (!isfinite(area) || fabsf(area) < 0.00001f) {
-        return;
-    }
-
-    float min_x = fminf(a->x, fminf(b->x, c->x));
-    float max_x = fmaxf(a->x, fmaxf(b->x, c->x));
-    float min_y = fminf(a->y, fminf(b->y, c->y));
-    float max_y = fmaxf(a->y, fmaxf(b->y, c->y));
-
-    if (max_x < 0.0f || max_y < 0.0f ||
-        min_x >= (float)buffers.width ||
-        min_y >= (float)buffers.height) {
-        return;
-    }
-
-    if (min_x < 0.0f) min_x = 0.0f;
-    if (min_y < 0.0f) min_y = 0.0f;
-
-    if (max_x > (float)(buffers.width - 1)) {
-        max_x = (float)(buffers.width - 1);
-    }
-
-    if (max_y > (float)(buffers.height - 1)) {
-        max_y = (float)(buffers.height - 1);
-    }
-
-    int first_x = (int)floorf(min_x);
-    int last_x = (int)ceilf(max_x);
-    int first_y = (int)floorf(min_y);
-    int last_y = (int)ceilf(max_y);
-
-    if (first_x < wall_clip_range.left) {
-        first_x = wall_clip_range.left;
-    }
-
-    if (last_x > wall_clip_range.right) {
-        last_x = wall_clip_range.right;
-    }
-
-    if (first_x > last_x) {
-        return;
-    }
-
-    /*
-     * Evaluate the three edge functions once at the first pixel center.
-     * Moving one pixel right changes each edge value by a constant amount,
-     * and moving one row down does the same. This avoids recalculating the
-     * edge functions from scratch for every pixel.
-     */
-    float start_x = (float)first_x + 0.5f;
-    float start_y = (float)first_y + 0.5f;
-
-    float row_w0 = wall_edge(b, c, start_x, start_y);
-    float row_w1 = wall_edge(c, a, start_x, start_y);
-    float row_w2 = wall_edge(a, b, start_x, start_y);
-
-    float w0_step_x = -(c->y - b->y);
-    float w1_step_x = -(a->y - c->y);
-    float w2_step_x = -(b->y - a->y);
-
-    float w0_step_y = c->x - b->x;
-    float w1_step_y = a->x - c->x;
-    float w2_step_y = b->x - a->x;
-
-    wall_triangles++;
-    wall_bbox_pixels += (unsigned long long)(last_x-first_x+1) * (unsigned long long)(last_y-first_y+1);
-    float inverse_area = 1.0f / area;
-    const float epsilon = -0.00001f;
-
-    for (int y = first_y; y <= last_y; y++) {
-        float edge_w0 = row_w0;
-        float edge_w1 = row_w1;
-        float edge_w2 = row_w2;
-
-        size_t index =
-            (size_t)y * (size_t)buffers.width + (size_t)first_x;
-
-        for (int x = first_x; x <= last_x; x++) {
-            /* Reject uncovered pixels before barycentric normalization. */
-            if (y >= buffers.clip_top[x] &&
-                y <= buffers.clip_bottom[x] &&
-                edge_w0 * inverse_area >= epsilon &&
-                edge_w1 * inverse_area >= epsilon &&
-                edge_w2 * inverse_area >= epsilon) {
-                    wall_covered_pixels++;
-                    const float w0 = edge_w0 * inverse_area;
-                    const float w1 = edge_w1 * inverse_area;
-                    const float w2 = edge_w2 * inverse_area;
-                    float inverse_z =
-                        w0 * a->inverse_z +
-                        w1 * b->inverse_z +
-                        w2 * c->inverse_z;
-
-                    /*
-                     * Store inverse depth. Larger values are closer to the
-                     * camera, so this avoids a reciprocal for every covered
-                     * pixel while preserving the depth test result.
-                     */
-                    if (inverse_z > 0.0f && isfinite(inverse_z) &&
-                        inverse_z > buffers.depth[index]) {
-
-                        float u_over_z =
-                            w0 * a->u_over_z +
-                            w1 * b->u_over_z +
-                            w2 * c->u_over_z;
-
-                        float v_over_z =
-                            w0 * a->v_over_z +
-                            w1 * b->v_over_z +
-                            w2 * c->v_over_z;
-
-                        float u = u_over_z / inverse_z;
-                        float v = v_over_z / inverse_z;
-
-                        wall_depth_passes++;
-                        buffers.depth[index] = inverse_z;
-                        buffers.pixels[index] = wall_sample_texture(
-                                                                texture,
-                                                                u,
-                                                                v
-                                                            );
-                    }
-            }
-
-            edge_w0 += w0_step_x;
-            edge_w1 += w1_step_x;
-            edge_w2 += w2_step_x;
-            index++;
-        }
-
-        row_w0 += w0_step_y;
-        row_w1 += w1_step_y;
-        row_w2 += w2_step_y;
-    }
 }
 
 
@@ -490,37 +320,32 @@ static void wall_draw_section(
         return;
     }
 
-    float focal_length =
-        (buffers.width * 0.5f) /
-        tanf((WALL_FOV * 0.5f) * (WALL_PI / 180.0f));
+    const float focal_length = buffers.focal_length;
 
     float center_x = buffers.width * 0.5f;
     float center_y = buffers.height * 0.5f;
 
-    ScreenVertex projected[WALL_MAX_VERTICES];
+    RasterVertex projected[WALL_MAX_VERTICES];
 
     for (int i = 0; i < count; i++) {
         if (clipped[i].z < WALL_NEAR_PLANE) {
             return;
         }
 
+        float inverse_z = 1.0f / clipped[i].z;
+
         projected[i].x =
-            clipped[i].x * focal_length /
-            clipped[i].z + center_x;
+            clipped[i].x * focal_length * inverse_z + center_x;
 
         projected[i].y =
             center_y -
-            clipped[i].y * focal_length /
-            clipped[i].z;
+            clipped[i].y * focal_length * inverse_z;
 
-        projected[i].inverse_z =
-            1.0f / clipped[i].z;
+        projected[i].inverse_z = inverse_z;
 
-        projected[i].u_over_z =
-            clipped[i].u * projected[i].inverse_z;
+        projected[i].u_over_z = clipped[i].u * inverse_z;
 
-        projected[i].v_over_z =
-            clipped[i].v * projected[i].inverse_z;
+        projected[i].v_over_z = clipped[i].v * inverse_z;
 
         if (!isfinite(projected[i].x) ||
             !isfinite(projected[i].y)) {
@@ -528,12 +353,30 @@ static void wall_draw_section(
         }
     }
 
+    RasterTarget target = {
+        .pixels = buffers.pixels,
+        .depth = buffers.depth,
+        .width = buffers.width,
+        .height = buffers.height,
+        .x_min = wall_clip_range.left,
+        .x_max = wall_clip_range.right,
+        .y_min = wall_clip_range.top,
+        .y_max = wall_clip_range.bottom,
+        .clip_top = buffers.clip_top,
+        .clip_bottom = buffers.clip_bottom
+    };
+
+    const Texture *texture =
+        texture_manager_get(buffers.textures, texture_id);
+
     for (int i = 1; i < count - 1; i++) {
-        wall_rasterize_triangle(
+        render_raster_triangle(
+            &target,
             &projected[0],
             &projected[i],
             &projected[i + 1],
-            texture_id
+            texture,
+            wall_sample_procedural
         );
     }
 }
@@ -552,7 +395,7 @@ static bool wall_outside_camera_frustum(
         render_camera_transform(player, end->x, top, end->z),
         render_camera_transform(player, start->x, top, start->z)
     };
-    float horizontal = tanf((WALL_FOV * 0.5f) * (WALL_PI / 180.0f));
+    float horizontal = (float)buffers.width * 0.5f / buffers.focal_length;
     float vertical = horizontal * (float)buffers.height / (float)buffers.width;
     bool behind = true, left = true, right = true, above = true, below = true;
     for (int i = 0; i < 4; ++i) {
@@ -698,6 +541,8 @@ static void wall_draw_callback(
     (void)userdata;
     wall_clip_range.left = clip->left;
     wall_clip_range.right = clip->right;
+    wall_clip_range.top = clip->y_min;
+    wall_clip_range.bottom = clip->y_max;
     wall_draw_segment(player, wall, level);
 }
 
@@ -721,9 +566,23 @@ void render_walls_draw_solid(
         return;
     }
 
+    if (level->sector_count > buffers.visit_capacity) {
+        RenderSectorVisit *grown = realloc(
+            buffers.visits,
+            (size_t)level->sector_count * sizeof(*grown)
+        );
+
+        if (grown == NULL) {
+            return;
+        }
+
+        buffers.visits = grown;
+        buffers.visit_capacity = level->sector_count;
+    }
+
     buffers.textures = textures;
 
-    wall_clip_reset(screen_width);
+    wall_clip_reset(screen_width, screen_height);
     wall_clip_vertical_reset();
 
     static Uint64 clear_ticks = 0;
@@ -753,7 +612,30 @@ void render_walls_draw_solid(
     clear_ticks += stage_end - stage_start;
     stage_start = stage_end;
 
-    /* Render sector floors and ceilings using shared inverse depth. */
+    /*
+     * Walls first. The portal traversal also records which sectors were
+     * reachable and through which columns, so the floor/ceiling pass below
+     * can skip everything hidden behind walls.
+     */
+    RenderPortalClip clip = {
+        .width = buffers.width,
+        .height = buffers.height,
+        .left = wall_clip_range.left,
+        .right = wall_clip_range.right,
+        .top = buffers.clip_top,
+        .bottom = buffers.clip_bottom,
+        .y_min = wall_clip_range.top,
+        .y_max = wall_clip_range.bottom
+    };
+    render_sector_traverse(
+        player, level, &clip, wall_draw_callback, NULL, buffers.visits
+    );
+
+    stage_end = SDL_GetPerformanceCounter();
+    raster_ticks += stage_end - stage_start;
+    stage_start = stage_end;
+
+    /* Floors and ceilings share the inverse-depth buffer with the walls. */
     render_planes_draw(
         player,
         level,
@@ -761,25 +643,13 @@ void render_walls_draw_solid(
         buffers.pixels,
         buffers.depth,
         buffers.width,
-        buffers.height
+        buffers.height,
+        buffers.visits
     );
-    
+
     stage_end = SDL_GetPerformanceCounter();
     plane_ticks += stage_end - stage_start;
-
-    stage_start = SDL_GetPerformanceCounter();
-
-    RenderPortalClip clip = {
-        buffers.width, buffers.height,
-        wall_clip_range.left, wall_clip_range.right,
-        buffers.clip_top, buffers.clip_bottom
-    };
-    render_sector_traverse(player, level, &clip, wall_draw_callback, NULL);
-
-    stage_end = SDL_GetPerformanceCounter();
-    raster_ticks += stage_end - stage_start;
-
-    stage_start = SDL_GetPerformanceCounter();
+    stage_start = stage_end;
 
     if (!SDL_UpdateTexture(
         buffers.texture,
@@ -831,12 +701,6 @@ void render_walls_draw_solid(
             draw_ms,
             total_ms
         );
-
-        SDL_Log("Wall pixels / 60 frames | triangles: %llu | bbox: %llu | covered: %llu | depth-passed: %llu | depth-rejected: %llu",
-            wall_triangles, wall_bbox_pixels, wall_covered_pixels, wall_depth_passes,
-            wall_covered_pixels - wall_depth_passes);
-        wall_triangles = wall_bbox_pixels = wall_covered_pixels = wall_depth_passes = 0;
-        render_planes_log_and_reset_stats();
 
         clear_ticks = 0;
         plane_ticks = 0;

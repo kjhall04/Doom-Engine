@@ -7,12 +7,38 @@
 
 #define RENDER_CAMERA_PI 3.14159265f
 
+/* sinf/cosf of the view angles only change once per frame, but this is
+ * called for every corner of every wall and plane triangle. Cache them. */
+typedef struct CameraTrigCache {
+    float yaw;
+    float pitch;
+    float sin_yaw;
+    float cos_yaw;
+    float sin_pitch;
+    float cos_pitch;
+    bool valid;
+} CameraTrigCache;
+
+static CameraTrigCache camera_trig = {0};
+
 RenderCameraPoint render_camera_transform(
     const Player *player,
     float world_x,
     float world_y,
     float world_z
 ) {
+    if (!camera_trig.valid ||
+        camera_trig.yaw != player->yaw ||
+        camera_trig.pitch != player->pitch) {
+        camera_trig.yaw = player->yaw;
+        camera_trig.pitch = player->pitch;
+        camera_trig.sin_yaw = sinf(player->yaw);
+        camera_trig.cos_yaw = cosf(player->yaw);
+        camera_trig.sin_pitch = sinf(player->pitch);
+        camera_trig.cos_pitch = cosf(player->pitch);
+        camera_trig.valid = true;
+    }
+
     float x = world_x - player->x;
 
     float y =
@@ -21,27 +47,21 @@ RenderCameraPoint render_camera_transform(
 
     float z = world_z - player->z;
 
-    float sin_yaw = sinf(player->yaw);
-    float cos_yaw = cosf(player->yaw);
-
     float camera_x =
-        x * cos_yaw +
-        z * sin_yaw;
+        x * camera_trig.cos_yaw +
+        z * camera_trig.sin_yaw;
 
     float camera_z =
-        x * sin_yaw -
-        z * cos_yaw;
-
-    float sin_pitch = sinf(player->pitch);
-    float cos_pitch = cosf(player->pitch);
+        x * camera_trig.sin_yaw -
+        z * camera_trig.cos_yaw;
 
     float pitched_y =
-        y * cos_pitch -
-        camera_z * sin_pitch;
+        y * camera_trig.cos_pitch -
+        camera_z * camera_trig.sin_pitch;
 
     float pitched_z =
-        y * sin_pitch +
-        camera_z * cos_pitch;
+        y * camera_trig.sin_pitch +
+        camera_z * camera_trig.cos_pitch;
 
     RenderCameraPoint point = {
         .x = camera_x,

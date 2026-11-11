@@ -199,6 +199,8 @@ bool render_portal_apply_clip(
     bool any_visible = false;
     int visible_left = right;
     int visible_right = left;
+    int visible_y_min = clip->height;
+    int visible_y_max = -1;
 
     for (int x = left; x <= right; x++) {
         float sample_x = (float)x + 0.5f;
@@ -272,6 +274,8 @@ bool render_portal_apply_clip(
 
             if (x < visible_left) visible_left = x;
             if (x > visible_right) visible_right = x;
+            if (clip->top[x] < visible_y_min) visible_y_min = clip->top[x];
+            if (clip->bottom[x] > visible_y_max) visible_y_max = clip->bottom[x];
         }
     }
 
@@ -281,6 +285,8 @@ bool render_portal_apply_clip(
 
     clip->left = visible_left;
     clip->right = visible_right;
+    clip->y_min = visible_y_min;
+    clip->y_max = visible_y_max;
 
     return true;
 }

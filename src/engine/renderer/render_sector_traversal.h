@@ -9,10 +9,22 @@ typedef void (*RenderWallDrawCallback)(
     const RenderPortalClip *clip, void *userdata
 );
 
-/* Traverse visible sectors, restoring clip state after each portal. */
+/* Columns of the screen through which a sector was reached. A sector that
+ * was never reached has left > right. */
+typedef struct RenderSectorVisit {
+    int left;
+    int right;
+} RenderSectorVisit;
+
+/* Traverse visible sectors, restoring clip state after each portal.
+ *
+ * If visits is not NULL it must hold level->sector_count entries; it is
+ * filled with the column range each sector was visible through, so later
+ * passes can skip sectors that cannot be seen. */
 void render_sector_traverse(
     const Player *player, const Level *level, RenderPortalClip *clip,
-    RenderWallDrawCallback draw_wall, void *userdata
+    RenderWallDrawCallback draw_wall, void *userdata,
+    RenderSectorVisit *visits
 );
 
 #endif

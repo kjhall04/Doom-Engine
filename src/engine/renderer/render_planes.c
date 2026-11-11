@@ -1,28 +1,21 @@
 #include "render_planes.h"
 #include "render_camera.h"
-#include <SDL3/SDL_log.h>
+#include "render_raster.h"
 
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define PLANE_MAX_VERTICES 128
 #define PLANE_NEAR 0.1001f
 
-typedef struct PlanePoint { 
+typedef struct PlanePoint {
     float x;
-    float z; 
+    float z;
 } PlanePoint;
-
-typedef struct PlaneScreenPoint {
-    float x;
-    float y;
-    float inverse_z;
-
-    float u_over_z;
-    float v_over_z;
-} PlaneScreenPoint;
 
 typedef struct PlaneTexturePoint {
     RenderCameraPoint camera;
@@ -31,21 +24,39 @@ typedef struct PlaneTexturePoint {
     float v;
 } PlaneTexturePoint;
 
+typedef struct PlaneTriangle {
+    PlanePoint p[3];
+} PlaneTriangle;
+
+/* Per-sector data that depends only on level geometry (vertices and walls),
+ * never on the camera or on sector heights. */
+typedef struct PlaneSectorGeometry {
+    float min_x, max_x, min_z, max_z;
+    bool present;
+
+    PlaneTriangle *triangles;
+    int triangle_count;
+} PlaneSectorGeometry;
+
+typedef struct PlaneGeometryCache {
+    bool valid;
+    uint64_t signature;
+    int sector_count;
+    PlaneSectorGeometry *sectors;
+} PlaneGeometryCache;
+
+static PlaneGeometryCache geometry_cache = {0};
+
 /* A cheap, conservative camera-space rejection test for an entire sector.
  * The eight corners of the sector's world-space bounding prism are tested
  * against the near and horizontal/vertical view planes. If every corner is
  * outside any one plane, no point in the convex bounding prism is visible.
  * This never removes geometry that could enter the camera frustum.
  */
-typedef struct SectorBounds {
-    float min_x, max_x, min_z, max_z;
-    bool present;
-} SectorBounds;
-
 static bool sector_outside_view(
     const Player *player,
     const Sector *sector,
-    const SectorBounds *bounds,
+    const PlaneSectorGeometry *bounds,
     int width,
     int height
 ) {
@@ -75,7 +86,7 @@ static bool sector_outside_view(
            outside_right == 8 || outside_top == 8 || outside_bottom == 8;
 }
 
-static void bounds_include(SectorBounds *b, const Vertex *v) {
+static void bounds_include(PlaneSectorGeometry *b, const Vertex *v) {
     if (!b->present) {
         b->min_x = b->max_x = v->x;
         b->min_z = b->max_z = v->z;
@@ -133,10 +144,6 @@ static bool inside_triangle(PlanePoint p, PlanePoint a, PlanePoint b,
            orientation * cross2(c,a,p) >= -eps;
 }
 
-static float screen_edge(PlaneScreenPoint a, PlaneScreenPoint b, float x, float y) {
-    return (b.x-a.x)*(y-a.y) - (b.y-a.y)*(x-a.x);
-}
-
 static uint32_t plane_sample_floor(float u, float v) {
     float tile_u = u - floorf(u);
     float tile_v = v - floorf(v);
@@ -172,126 +179,256 @@ static uint32_t plane_sample_ceiling(float u, float v) {
 }
 
 
-static uint32_t plane_sample_texture(
-    const Texture *texture,
-    float u,
-    float v,
-    bool is_ceiling
-) {
-    if (texture != NULL) {
-        return texture_sample(texture, u, v);
+
+/* ------------------------------------------------------------------ */
+/* Geometry cache: triangulate each sector once, not every frame.      */
+/* ------------------------------------------------------------------ */
+
+static uint64_t hash_bytes(uint64_t h, const void *data, size_t size) {
+    const unsigned char *bytes = data;
+    for (size_t i = 0; i < size; ++i) {
+        h ^= bytes[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+/* Fingerprint of everything the triangulation depends on. Sector heights
+ * and textures are deliberately excluded; they are read live each frame. */
+static uint64_t level_geometry_signature(const Level *level) {
+    uint64_t h = 1469598103934665603ull;
+
+    h = hash_bytes(h, &level->vertex_count, sizeof(level->vertex_count));
+    h = hash_bytes(h, &level->wall_count, sizeof(level->wall_count));
+    h = hash_bytes(h, &level->sector_count, sizeof(level->sector_count));
+
+    for (int i = 0; i < level->vertex_count; ++i) {
+        h = hash_bytes(h, &level->vertices[i], sizeof(Vertex));
     }
 
-    return is_ceiling
-        ? plane_sample_ceiling(u, v)
-        : plane_sample_floor(u, v);
+    for (int i = 0; i < level->wall_count; ++i) {
+        const Wall *w = &level->walls[i];
+        h = hash_bytes(h, &w->vertex_start, sizeof(int));
+        h = hash_bytes(h, &w->vertex_end, sizeof(int));
+        h = hash_bytes(h, &w->front_sector, sizeof(int));
+        h = hash_bytes(h, &w->back_sector, sizeof(int));
+    }
+
+    return h;
 }
 
+static void geometry_cache_clear(void) {
+    if (geometry_cache.sectors != NULL) {
+        for (int i = 0; i < geometry_cache.sector_count; ++i) {
+            free(geometry_cache.sectors[i].triangles);
+        }
+        free(geometry_cache.sectors);
+    }
 
-static unsigned long long plane_triangles = 0;
-static unsigned long long plane_bbox_pixels = 0;
-static unsigned long long plane_covered_pixels = 0;
-static unsigned long long plane_depth_passes = 0;
-
-void render_planes_log_and_reset_stats(void) {
-    /* Called after the renderer's 60-frame timing report. */
-    SDL_Log("Plane pixels / 60 frames | triangles: %llu | bbox: %llu | covered: %llu | depth-passed: %llu | depth-rejected: %llu",
-        plane_triangles, plane_bbox_pixels, plane_covered_pixels, plane_depth_passes,
-        plane_covered_pixels - plane_depth_passes);
-    plane_triangles = plane_bbox_pixels = plane_covered_pixels = plane_depth_passes = 0;
+    geometry_cache.sectors = NULL;
+    geometry_cache.sector_count = 0;
+    geometry_cache.valid = false;
 }
 
-static void raster_triangle(
-    PlaneScreenPoint a,
-    PlaneScreenPoint b,
-    PlaneScreenPoint c,
-    bool is_ceiling,
-    const Texture *texture,
-    uint32_t *pixels,
-    float *depth,
-    int width,
-    int height
+/* Ear-clip one sector into triangles. Same algorithm and checks as the
+ * original per-frame code. */
+static void triangulate_sector(
+    const Level *level, int sector, PlaneSectorGeometry *geometry
 ) {
-    float area = screen_edge(a,b,c.x,c.y);
-    if (!isfinite(area) || fabsf(area) < 0.00001f) return;
-    if (area < 0.0f) { PlaneScreenPoint temp = b; b = c; c = temp; area = -area; }
-    float minx = fminf(a.x, fminf(b.x,c.x));
-    float maxx = fmaxf(a.x, fmaxf(b.x,c.x));
-    float miny = fminf(a.y, fminf(b.y,c.y));
-    float maxy = fmaxf(a.y, fmaxf(b.y,c.y));
-    if (maxx < 0 || maxy < 0 || minx >= width || miny >= height) return;
-    int x0 = (int)fmaxf(0, floorf(minx));
-    int x1 = (int)fminf((float)(width-1), ceilf(maxx));
-    int y0 = (int)fmaxf(0, floorf(miny));
-    int y1 = (int)fminf((float)(height-1), ceilf(maxy));
-    /* Incremental edge evaluation: each pixel advances three additions
-       instead of recomputing three 2D cross products. */
-    const float inv_area = 1.0f / area;
-    const float sx = (float)x0 + 0.5f;
-    const float sy = (float)y0 + 0.5f;
-    float row0 = screen_edge(b,c,sx,sy);
-    float row1 = screen_edge(c,a,sx,sy);
-    float row2 = screen_edge(a,b,sx,sy);
-    const float dx0 = -(c.y-b.y), dx1 = -(a.y-c.y), dx2 = -(b.y-a.y);
-    const float dy0 = c.x-b.x, dy1 = a.x-c.x, dy2 = b.x-a.x;
-    plane_triangles++;
-    plane_bbox_pixels += (unsigned long long)(x1-x0+1) * (unsigned long long)(y1-y0+1);
-    const float edge_epsilon = -0.00001f;
-    for (int y = y0; y <= y1; ++y) {
-        size_t index = (size_t)y * (size_t)width + (size_t)x0;
-        float w0 = row0, w1 = row1, w2 = row2;
-        for (int x = x0; x <= x1; ++x, ++index) {
-            if (w0 >= edge_epsilon && w1 >= edge_epsilon && w2 >= edge_epsilon) {
-                plane_covered_pixels++;
-                const float iz = (w0*a.inverse_z + w1*b.inverse_z +
-                                  w2*c.inverse_z) * inv_area;
-                if (iz > depth[index] && iz > 0.0f && isfinite(iz)) {
-                    const float u_over_z = (w0*a.u_over_z + w1*b.u_over_z +
-                                            w2*c.u_over_z) * inv_area;
-                    const float v_over_z = (w0*a.v_over_z + w1*b.v_over_z +
-                                            w2*c.v_over_z) * inv_area;
-                    const float u = u_over_z / iz;
-                    const float v = v_over_z / iz;
-                    plane_depth_passes++;
-                    pixels[index] = plane_sample_texture(texture,u,v,is_ceiling);
-                    depth[index] = iz;
+    PlanePoint boundary[PLANE_MAX_VERTICES];
+    int n = sector_boundary(level, sector, boundary);
+    if (n < 3) return;
+
+    float signed_area = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        PlanePoint a = boundary[i], b = boundary[(i+1)%n];
+        signed_area += a.x*b.z - b.x*a.z;
+    }
+    if (fabsf(signed_area) < 0.000001f) return;
+    float orientation = signed_area > 0 ? 1.0f : -1.0f;
+
+    PlaneTriangle *triangles = malloc((size_t)(n - 2) * sizeof(*triangles));
+    if (triangles == NULL) return;
+    int triangle_count = 0;
+
+    int remaining[PLANE_MAX_VERTICES];
+    for (int i = 0; i < n; ++i) remaining[i] = i;
+    int length = n;
+
+    while (length > 2) {
+        bool found = false;
+        for (int i = 0; i < length; ++i) {
+            int ia = remaining[(i+length-1)%length];
+            int ib = remaining[i];
+            int ic = remaining[(i+1)%length];
+            PlanePoint a = boundary[ia], b = boundary[ib], c = boundary[ic];
+            if (orientation*cross2(a,b,c) <= 0.000001f) continue;
+            bool contains = false;
+            for (int j = 0; j < length; ++j) {
+                int id = remaining[j];
+                if (id == ia || id == ib || id == ic) continue;
+                if (inside_triangle(boundary[id],a,b,c,orientation)) {
+                    contains = true; break;
                 }
             }
-            w0 += dx0; w1 += dx1; w2 += dx2;
+            if (contains) continue;
+
+            triangles[triangle_count++] = (PlaneTriangle){{a, b, c}};
+
+            for (int j = i; j < length-1; ++j) remaining[j] = remaining[j+1];
+            --length;
+            found = true;
+            break;
         }
-        row0 += dy0; row1 += dy1; row2 += dy2;
+        if (!found) break; /* Invalid or self-intersecting boundary. */
     }
+
+    if (triangle_count == 0) {
+        free(triangles);
+        return;
+    }
+
+    geometry->triangles = triangles;
+    geometry->triangle_count = triangle_count;
 }
+
+static bool geometry_cache_prepare(const Level *level) {
+    uint64_t signature = level_geometry_signature(level);
+
+    if (geometry_cache.valid &&
+        geometry_cache.signature == signature &&
+        geometry_cache.sector_count == level->sector_count) {
+        return true;
+    }
+
+    geometry_cache_clear();
+
+    if (level->sector_count <= 0) {
+        return false;
+    }
+
+    geometry_cache.sectors =
+        calloc((size_t)level->sector_count, sizeof(*geometry_cache.sectors));
+
+    if (geometry_cache.sectors == NULL) {
+        return false;
+    }
+
+    geometry_cache.sector_count = level->sector_count;
+
+    /* Bounds in a single wall pass. */
+    for (int i = 0; i < level->wall_count; ++i) {
+        const Wall *wall = &level->walls[i];
+        if (wall->vertex_start < 0 || wall->vertex_start >= level->vertex_count ||
+            wall->vertex_end < 0 || wall->vertex_end >= level->vertex_count) continue;
+        const Vertex *a = &level->vertices[wall->vertex_start];
+        const Vertex *b = &level->vertices[wall->vertex_end];
+        const int ids[2] = {wall->front_sector, wall->back_sector};
+        for (int side = 0; side < 2; ++side) {
+            int id = ids[side];
+            if (id < 0 || id >= level->sector_count) continue;
+            bounds_include(&geometry_cache.sectors[id], a);
+            bounds_include(&geometry_cache.sectors[id], b);
+        }
+    }
+
+    for (int sector = 0; sector < level->sector_count; ++sector) {
+        triangulate_sector(level, sector, &geometry_cache.sectors[sector]);
+    }
+
+    geometry_cache.signature = signature;
+    geometry_cache.valid = true;
+    return true;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Draw order                                                          */
+/* ------------------------------------------------------------------ */
+
+typedef struct PlaneOrderEntry {
+    int sector;
+    float distance;
+} PlaneOrderEntry;
+
+static PlaneOrderEntry *plane_order = NULL;
+static int plane_order_capacity = 0;
+static int plane_order_count = 0;
+
+/* Collect the sectors to draw, sorted by squared distance from the player
+ * to the sector's bounding rectangle (zero when inside it). */
+static bool plane_order_prepare(
+    const Player *player,
+    const Level *level,
+    const RenderSectorVisit *visits
+) {
+    if (level->sector_count > plane_order_capacity) {
+        PlaneOrderEntry *grown = realloc(
+            plane_order, (size_t)level->sector_count * sizeof(*grown));
+
+        if (grown == NULL) {
+            return false;
+        }
+
+        plane_order = grown;
+        plane_order_capacity = level->sector_count;
+    }
+
+    plane_order_count = 0;
+
+    for (int sector = 0; sector < level->sector_count; ++sector) {
+        const PlaneSectorGeometry *g = &geometry_cache.sectors[sector];
+
+        if (g->triangle_count == 0) continue;
+        if (visits != NULL && visits[sector].left > visits[sector].right)
+            continue;
+
+        float dx = 0.0f, dz = 0.0f;
+        if (player->x < g->min_x) dx = g->min_x - player->x;
+        else if (player->x > g->max_x) dx = player->x - g->max_x;
+        if (player->z < g->min_z) dz = g->min_z - player->z;
+        else if (player->z > g->max_z) dz = player->z - g->max_z;
+
+        PlaneOrderEntry entry = { sector, dx * dx + dz * dz };
+
+        /* Insertion sort keeps the list ordered as it is built. */
+        int j = plane_order_count++;
+        while (j > 0 && plane_order[j - 1].distance > entry.distance) {
+            plane_order[j] = plane_order[j - 1];
+            --j;
+        }
+        plane_order[j] = entry;
+    }
+
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Drawing                                                             */
+/* ------------------------------------------------------------------ */
 
 /* Clip a triangle to the near plane before perspective projection. */
 static void draw_world_triangle(
     const Player *player,
-    PlanePoint a,
-    PlanePoint b,
-    PlanePoint c,
+    const PlaneTriangle *triangle,
     float elevation,
-    bool is_ceiling,
     const Texture *texture,
-    uint32_t *pixels,
-    float *depth,
-    int width,
-    int height
+    RasterFallbackFn fallback,
+    const RasterTarget *target
 ) {
-    PlanePoint points[3] = {a, b, c};
-
     PlaneTexturePoint input[3];
 
     for (int i = 0; i < 3; ++i) {
         input[i].camera = render_camera_transform(
             player,
-            points[i].x,
+            triangle->p[i].x,
             elevation,
-            points[i].z
+            triangle->p[i].z
         );
 
         // World aligned texture coordinates.
-        input[i].u = points[i].x;
-        input[i].v = points[i].z;
+        input[i].u = triangle->p[i].x;
+        input[i].v = triangle->p[i].z;
     }
 
     PlaneTexturePoint clipped[4];
@@ -338,19 +475,19 @@ static void draw_world_triangle(
         return;
     }
 
-    float focal = width * 0.5f;
+    float focal = target->width * 0.5f;
 
-    PlaneScreenPoint screen[4];
+    RasterVertex screen[4];
 
     for (int i = 0; i < n; ++i) {
         float inverse_z = 1.0f / clipped[i].camera.z;
 
         screen[i].x =
-            width * 0.5f +
+            target->width * 0.5f +
             focal * clipped[i].camera.x * inverse_z;
 
         screen[i].y =
-            height * 0.5f -
+            target->height * 0.5f -
             focal * clipped[i].camera.y * inverse_z;
 
         screen[i].inverse_z = inverse_z;
@@ -366,16 +503,13 @@ static void draw_world_triangle(
 
     // Triangulate the clipped polygon.
     for (int i = 1; i + 1 < n; ++i) {
-        raster_triangle(
-            screen[0],
-            screen[i],
-            screen[i + 1],
-            is_ceiling,
+        render_raster_triangle(
+            target,
+            &screen[0],
+            &screen[i],
+            &screen[i + 1],
             texture,
-            pixels,
-            depth,
-            width,
-            height
+            fallback
         );
     }
 }
@@ -387,98 +521,72 @@ void render_planes_draw(
     uint32_t *pixels,
     float *depth,
     int width,
-    int height
+    int height,
+    const RenderSectorVisit *visits
 ) {
     if (!player || !level || !pixels || !depth || width <= 0 || height <= 0 ||
         !level->vertices || !level->walls || !level->sectors) return;
 
-    /* Build bounds in a single wall pass. Avoid O(sectors * walls) work
-       just to determine which sectors cannot appear on screen. */
-    SectorBounds *bounds = calloc((size_t)level->sector_count, sizeof(*bounds));
-    if (!bounds) return;
-    for (int i = 0; i < level->wall_count; ++i) {
-        const Wall *wall = &level->walls[i];
-        if (wall->vertex_start < 0 || wall->vertex_start >= level->vertex_count ||
-            wall->vertex_end < 0 || wall->vertex_end >= level->vertex_count) continue;
-        const Vertex *a = &level->vertices[wall->vertex_start];
-        const Vertex *b = &level->vertices[wall->vertex_end];
-        const int ids[2] = {wall->front_sector, wall->back_sector};
-        for (int side = 0; side < 2; ++side) {
-            int id = ids[side];
-            if (id < 0 || id >= level->sector_count) continue;
-            bounds_include(&bounds[id], a);
-            bounds_include(&bounds[id], b);
-        }
-    }
+    if (!geometry_cache_prepare(level)) return;
 
-    for (int sector = 0; sector < level->sector_count; ++sector) {
-        const Sector *sector_data = &level->sectors[sector];
-        if (sector_outside_view(player, sector_data, &bounds[sector], width, height))
-            continue;
-        PlanePoint boundary[PLANE_MAX_VERTICES];
-        int n = sector_boundary(level,sector,boundary);
-        if (n < 3) continue;
-        float signed_area = 0.0f;
-        for (int i = 0; i < n; ++i) {
-            PlanePoint a = boundary[i], b = boundary[(i+1)%n];
-            signed_area += a.x*b.z - b.x*a.z;
+    RasterTarget target = {
+        .pixels = pixels,
+        .depth = depth,
+        .width = width,
+        .height = height,
+        .x_min = 0,
+        .x_max = width - 1,
+        .y_min = 0,
+        .y_max = height - 1,
+        .clip_top = NULL,
+        .clip_bottom = NULL
+    };
+
+    /* Draw nearest sectors first so farther floors and ceilings are
+     * rejected by the depth test instead of being overwritten. */
+    if (!plane_order_prepare(player, level, visits)) return;
+
+    for (int slot = 0; slot < plane_order_count; ++slot) {
+        const int sector = plane_order[slot].sector;
+        const PlaneSectorGeometry *geometry = &geometry_cache.sectors[sector];
+
+        if (geometry->triangle_count == 0) continue;
+
+        /* Sectors the portal traversal never reached are hidden behind
+         * walls; skip their floors and ceilings entirely. */
+        if (visits != NULL) {
+            target.x_min = visits[sector].left;
+            target.x_max = visits[sector].right;
         }
-        if (fabsf(signed_area) < 0.000001f) continue;
-        float orientation = signed_area > 0 ? 1.0f : -1.0f;
+
+        const Sector *sector_data = &level->sectors[sector];
+
+        if (sector_outside_view(player, sector_data, geometry, width, height))
+            continue;
+
         const Texture *floor_texture = texture_manager_get(
             textures, sector_data->floor_texture_id);
         const Texture *ceiling_texture = texture_manager_get(
             textures, sector_data->ceiling_texture_id);
-        int remaining[PLANE_MAX_VERTICES];
-        for (int i = 0; i < n; ++i) remaining[i] = i;
-        int length = n;
-        while (length > 2) {
-            bool found = false;
-            for (int i = 0; i < length; ++i) {
-                int ia = remaining[(i+length-1)%length];
-                int ib = remaining[i];
-                int ic = remaining[(i+1)%length];
-                PlanePoint a = boundary[ia], b = boundary[ib], c = boundary[ic];
-                if (orientation*cross2(a,b,c) <= 0.000001f) continue;
-                bool contains = false;
-                for (int j = 0; j < length; ++j) {
-                    int id = remaining[j];
-                    if (id == ia || id == ib || id == ic) continue;
-                    if (inside_triangle(boundary[id],a,b,c,orientation)) {
-                        contains = true; break;
-                    }
-                }
-                if (contains) continue;
-                draw_world_triangle(
-                    player,
-                    a, b, c,
-                    sector_data->floor_height,
-                    false,
-                    floor_texture,
-                    pixels,
-                    depth,
-                    width,
-                    height
-                );
 
-                draw_world_triangle(
-                    player,
-                    a, b, c,
-                    sector_data->ceiling_height,
-                    true,
-                    ceiling_texture,
-                    pixels,
-                    depth,
-                    width,
-                    height
-                );
-                for (int j = i; j < length-1; ++j) remaining[j] = remaining[j+1];
-                --length;
-                found = true;
-                break;
-            }
-            if (!found) break; /* Invalid or self-intersecting boundary. */
+        for (int t = 0; t < geometry->triangle_count; ++t) {
+            draw_world_triangle(
+                player,
+                &geometry->triangles[t],
+                sector_data->floor_height,
+                floor_texture,
+                plane_sample_floor,
+                &target
+            );
+
+            draw_world_triangle(
+                player,
+                &geometry->triangles[t],
+                sector_data->ceiling_height,
+                ceiling_texture,
+                plane_sample_ceiling,
+                &target
+            );
         }
     }
-    free(bounds);
 }

@@ -22,6 +22,7 @@ add_library(EngineCore STATIC
 
     src/engine/renderer/renderer.c
     src/engine/renderer/render_camera.c
+    src/engine/renderer/render_raster.c
     src/engine/renderer/render_walls.c
     src/engine/renderer/render_planes.c
     src/engine/renderer/render_visibility.c
