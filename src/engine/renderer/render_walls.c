@@ -222,6 +222,12 @@ static uint32_t wall_sample_texture(
 }
 
 
+/* Cumulative counters, reset after each 60-frame report. */
+static unsigned long long wall_bbox_pixels = 0;
+static unsigned long long wall_covered_pixels = 0;
+static unsigned long long wall_depth_passes = 0;
+static unsigned long long wall_triangles = 0;
+
 static void wall_rasterize_triangle(
     const ScreenVertex *a,
     const ScreenVertex *b,
@@ -296,6 +302,8 @@ static void wall_rasterize_triangle(
     float w1_step_y = a->x - c->x;
     float w2_step_y = b->x - a->x;
 
+    wall_triangles++;
+    wall_bbox_pixels += (unsigned long long)(last_x-first_x+1) * (unsigned long long)(last_y-first_y+1);
     float inverse_area = 1.0f / area;
     const float epsilon = -0.00001f;
 
@@ -308,14 +316,16 @@ static void wall_rasterize_triangle(
             (size_t)y * (size_t)buffers.width + (size_t)first_x;
 
         for (int x = first_x; x <= last_x; x++) {
-            float w0 = edge_w0 * inverse_area;
-            float w1 = edge_w1 * inverse_area;
-            float w2 = edge_w2 * inverse_area;
-
-            /* Keep edge increments running even for clipped pixels. */
+            /* Reject uncovered pixels before barycentric normalization. */
             if (y >= buffers.clip_top[x] &&
-                y <= buffers.clip_bottom[x]) {
-                if (w0 >= epsilon && w1 >= epsilon && w2 >= epsilon) {
+                y <= buffers.clip_bottom[x] &&
+                edge_w0 * inverse_area >= epsilon &&
+                edge_w1 * inverse_area >= epsilon &&
+                edge_w2 * inverse_area >= epsilon) {
+                    wall_covered_pixels++;
+                    const float w0 = edge_w0 * inverse_area;
+                    const float w1 = edge_w1 * inverse_area;
+                    const float w2 = edge_w2 * inverse_area;
                     float inverse_z =
                         w0 * a->inverse_z +
                         w1 * b->inverse_z +
@@ -342,6 +352,7 @@ static void wall_rasterize_triangle(
                         float u = u_over_z / inverse_z;
                         float v = v_over_z / inverse_z;
 
+                        wall_depth_passes++;
                         buffers.depth[index] = inverse_z;
                         buffers.pixels[index] = wall_sample_texture(
                                                                 texture,
@@ -349,7 +360,6 @@ static void wall_rasterize_triangle(
                                                                 v
                                                             );
                     }
-                }
             }
 
             edge_w0 += w0_step_x;
@@ -821,6 +831,12 @@ void render_walls_draw_solid(
             draw_ms,
             total_ms
         );
+
+        SDL_Log("Wall pixels / 60 frames | triangles: %llu | bbox: %llu | covered: %llu | depth-passed: %llu | depth-rejected: %llu",
+            wall_triangles, wall_bbox_pixels, wall_covered_pixels, wall_depth_passes,
+            wall_covered_pixels - wall_depth_passes);
+        wall_triangles = wall_bbox_pixels = wall_covered_pixels = wall_depth_passes = 0;
+        render_planes_log_and_reset_stats();
 
         clear_ticks = 0;
         plane_ticks = 0;

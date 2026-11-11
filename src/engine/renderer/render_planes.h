@@ -17,4 +17,7 @@ void render_planes_draw(
     int height
 );
 
+/* Report and reset per-pixel counters accumulated since last report. */
+void render_planes_log_and_reset_stats(void);
+
 #endif
