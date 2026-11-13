@@ -7,6 +7,8 @@ void level_init(Level *level) {
 
     *level = (Level){0};
 
+    level->ambient_r = level->ambient_g = level->ambient_b = 0.25f;
+
     level->player_spawn = (PlayerSpawn) {
         .x = -5.0f,
         .y = 0.0f,
@@ -22,6 +24,7 @@ void level_free(Level *level) {
     free(level->vertices);
     free(level->walls);
     free(level->sectors);
+    free(level->lights);
 
     *level = (Level){0};
 }

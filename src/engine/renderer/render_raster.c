@@ -36,6 +36,44 @@ typedef struct SpanAttributes {
     float v_over_z;
 } SpanAttributes;
 
+static inline uint32_t shade_pixel(uint32_t color,
+                                   unsigned lr, unsigned lg, unsigned lb) {
+    if (lr == 255 && lg == 255 && lb == 255)
+        return color;
+    unsigned r = ((color >> 16) & 255u) * lr / 255u;
+    unsigned g = ((color >> 8) & 255u) * lg / 255u;
+    unsigned b = (color & 255u) * lb / 255u;
+    return (color & 0xff000000u) | (r << 16) | (g << 8) | b;
+}
+
+/* Evaluate nearby point lights once per short span, not for every texel.
+ * Surface lighting crosses sector boundaries. Occlusion/shadows are future work. */
+static void span_light(const RasterTarget *t, float u, float v,
+                       unsigned *r, unsigned *g, unsigned *b) {
+    if (!t->lights) {
+        *r=t->light_r; *g=t->light_g; *b=t->light_b;
+        return;
+    }
+    float wx=t->world_origin[0]+u*t->world_u[0]+v*t->world_v[0];
+    float wy=t->world_origin[1]+u*t->world_u[1]+v*t->world_v[1];
+    float wz=t->world_origin[2]+u*t->world_u[2]+v*t->world_v[2];
+    float cr=t->ambient[0], cg=t->ambient[1], cb=t->ambient[2];
+    for(int i=0;i<t->light_count;i++) {
+        const PointLight *l=&t->lights[i];
+        float dx=wx-l->x,dy=wy-l->y,dz=wz-l->z;
+        float d2=dx*dx+dy*dy+dz*dz, r2=l->radius*l->radius;
+        if (d2>=r2 || r2<=0.0f) continue;
+        float falloff=1.0f-d2/r2;
+        falloff*=falloff*l->intensity*t->light_factors[i];
+        cr+=falloff*(float)l->r/255.0f;
+        cg+=falloff*(float)l->g/255.0f;
+        cb+=falloff*(float)l->b/255.0f;
+    }
+    *r=(unsigned)(fminf(fmaxf(cr,0.0f),1.0f)*255.0f);
+    *g=(unsigned)(fminf(fmaxf(cg,0.0f),1.0f)*255.0f);
+    *b=(unsigned)(fminf(fmaxf(cb,0.0f),1.0f)*255.0f);
+}
+
 static void raster_span(
     const RasterTarget *target,
     int y,
@@ -79,7 +117,7 @@ static void raster_span(
     int remaining = x_last - x_first + 1;
 
     while (remaining > 0) {
-        int n = remaining < RASTER_CHUNK ? remaining : RASTER_CHUNK;
+        int n = remaining < (target->lights ? 4 : RASTER_CHUNK) ? remaining : (target->lights ? 4 : RASTER_CHUNK);
         float nf = (float)n;
 
         SpanAttributes next = {
@@ -112,6 +150,10 @@ static void raster_span(
             next_v = next.v_over_z * reciprocal;
         }
 
+        unsigned shade_r=target->light_r,shade_g=target->light_g,shade_b=target->light_b;
+        if (current_valid && next_valid && target->lights)
+            span_light(target, (current_u+next_u)*0.5f, (current_v+next_v)*0.5f,
+                       &shade_r,&shade_g,&shade_b);
         if (current_valid && next_valid) {
             const float inverse_n =
                 (n == RASTER_CHUNK) ? (1.0f / (float)RASTER_CHUNK) : 1.0f / nf;
@@ -170,9 +212,9 @@ static void raster_span(
 
                         if (iz > depth_row[px]) {
                             depth_row[px] = iz;
-                            pixel_row[px] =
+                            pixel_row[px] = shade_pixel(
                                 texels[(size_t)(fv >> 16) * (size_t)tex_w +
-                                       (size_t)(fu >> 16)];
+                                       (size_t)(fu >> 16)], shade_r, shade_g, shade_b);
                         }
                     }
                 } else {
@@ -208,8 +250,8 @@ static void raster_span(
                                 (int)(tv + dtv * fk), tex_h, inverse_tex_h);
 
                             depth_row[px] = iz;
-                            pixel_row[px] =
-                                texels[(size_t)yi * (size_t)tex_w + xi];
+                            pixel_row[px] = shade_pixel(
+                                texels[(size_t)yi * (size_t)tex_w + xi], shade_r, shade_g, shade_b);
                         }
                     }
                 }
@@ -228,9 +270,9 @@ static void raster_span(
                         const float fk = (float)k;
 
                         depth_row[px] = iz;
-                        pixel_row[px] = fallback != NULL
+                        pixel_row[px] = shade_pixel(fallback != NULL
                             ? fallback(current_u + du * fk, current_v + dv * fk)
-                            : 0xFFFF00FFu;
+                            : 0xFFFF00FFu, shade_r, shade_g, shade_b);
                     }
                 }
             }

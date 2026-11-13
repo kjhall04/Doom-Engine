@@ -102,6 +102,18 @@ static bool read_sectors(
             return false;
         }
 
+        /* Optional lighting fields preserve compatibility with older maps. */
+        s->light_level = 255;
+        s->light_r = s->light_g = s->light_b = 255;
+        const char *keys[] = {"light_level", "light_r", "light_g", "light_b"};
+        int *values[] = {&s->light_level, &s->light_r, &s->light_g, &s->light_b};
+        for (int j = 0; j < 4; ++j) {
+            if (cJSON_GetObjectItemCaseSensitive(item, keys[j]) != NULL) {
+                if (!read_int(item, keys[j], values[j]) ||
+                    *values[j] < 0 || *values[j] > 255) return false;
+            }
+        }
+
         if (s->floor_height >= s->ceiling_height ||
             s->floor_texture_id < 0 ||
             s->ceiling_texture_id < 0) {
@@ -109,6 +121,38 @@ static bool read_sectors(
         }
     }
 
+    return true;
+}
+
+static bool read_lights(Level *level, const cJSON *array) {
+    if (!array) return true; /* old level */
+    if (!cJSON_IsArray(array)) return false;
+    int count = cJSON_GetArraySize(array);
+    if (count < 0 || count > 1024) return false;
+    if (count == 0) return true;
+    level->lights = calloc((size_t)count, sizeof(PointLight));
+    if (!level->lights) return false;
+    level->light_count = count;
+    for (int i = 0; i < count; ++i) {
+        const cJSON *item = cJSON_GetArrayItem(array, i);
+        PointLight *l = &level->lights[i];
+        if (!cJSON_IsObject(item) ||
+            !read_float(item, "x", &l->x) ||
+            !read_float(item, "y", &l->y) ||
+            !read_float(item, "z", &l->z) ||
+            !read_float(item, "radius", &l->radius) ||
+            !read_float(item, "intensity", &l->intensity) ||
+            !read_int(item, "r", &l->r) ||
+            !read_int(item, "g", &l->g) ||
+            !read_int(item, "b", &l->b) ||
+            l->radius <= 0 || l->radius > 10000 ||
+            l->intensity < 0 || l->intensity > 100 ||
+            l->r < 0 || l->r > 255 || l->g < 0 || l->g > 255 ||
+            l->b < 0 || l->b > 255) return false;
+        const cJSON *effect = cJSON_GetObjectItemCaseSensitive(item, "effect");
+        if (effect && (!read_int(item, "effect", &l->effect) ||
+                       l->effect < 0 || l->effect > 2)) return false;
+    }
     return true;
 }
 
@@ -256,9 +300,23 @@ bool level_load_json(Level *level, const char *path) {
     if (valid) {
         valid = read_vertices(&loaded, vertices) &&
                 read_sectors(&loaded, sectors) &&
-                read_walls(&loaded, walls);
+                read_walls(&loaded, walls) &&
+                read_lights(&loaded, cJSON_GetObjectItemCaseSensitive(root, "lights"));
     }
 
+    const cJSON *ambient=cJSON_GetObjectItemCaseSensitive(root,"ambient");
+    if(valid && ambient) {
+        if(!cJSON_IsArray(ambient) || cJSON_GetArraySize(ambient)!=3) valid=false;
+        else {
+            float *channels[]={&loaded.ambient_r,&loaded.ambient_g,&loaded.ambient_b};
+            for(int i=0;i<3;i++) {
+                const cJSON *v=cJSON_GetArrayItem(ambient,i);
+                if(!cJSON_IsNumber(v) || !isfinite(v->valuedouble) ||
+                   v->valuedouble<0.0 || v->valuedouble>1.0) valid=false;
+                else *channels[i]=(float)v->valuedouble;
+            }
+        }
+    }
     cJSON_Delete(root);
 
     if (!valid) {
@@ -322,6 +380,17 @@ bool level_save_json(const Level *level, const char *path) {
         !isfinite(level->player_spawn.pitch) || level->player_spawn.pitch < -89.0f ||
         level->player_spawn.pitch > 89.0f) return false;
 
+    for (int i = 0; i < level->light_count; ++i) {
+        const PointLight *l = &level->lights[i];
+        if (!isfinite(l->x) || !isfinite(l->y) || !isfinite(l->z) ||
+            !isfinite(l->radius) || !isfinite(l->intensity) ||
+            l->radius <= 0 || l->radius > 10000 ||
+            l->intensity < 0 || l->intensity > 100 ||
+            l->r < 0 || l->r > 255 || l->g < 0 || l->g > 255 ||
+            l->b < 0 || l->b > 255 || l->effect < 0 || l->effect > 2)
+            return false;
+    }
+    if (level->light_count < 0 || (level->light_count && !level->lights)) return false;
     cJSON *root = cJSON_CreateObject();
 
     if (!root) return false;
@@ -390,7 +459,37 @@ bool level_save_json(const Level *level, const char *path) {
             cJSON_AddNumberToObject(item, "floor_height", s->floor_height) != NULL &&
             cJSON_AddNumberToObject(item, "ceiling_height", s->ceiling_height) != NULL &&
             cJSON_AddNumberToObject(item, "floor_texture_id", s->floor_texture_id) != NULL &&
-            cJSON_AddNumberToObject(item, "ceiling_texture_id", s->ceiling_texture_id) != NULL;
+            cJSON_AddNumberToObject(item, "ceiling_texture_id", s->ceiling_texture_id) != NULL &&
+            cJSON_AddNumberToObject(item, "light_level", s->light_level) != NULL &&
+            cJSON_AddNumberToObject(item, "light_r", s->light_r) != NULL &&
+            cJSON_AddNumberToObject(item, "light_g", s->light_g) != NULL &&
+            cJSON_AddNumberToObject(item, "light_b", s->light_b) != NULL;
+    }
+
+    cJSON *ambient=cJSON_AddArrayToObject(root,"ambient");
+    if(!ambient) success=false;
+    else {
+        cJSON_AddItemToArray(ambient,cJSON_CreateNumber(level->ambient_r));
+        cJSON_AddItemToArray(ambient,cJSON_CreateNumber(level->ambient_g));
+        cJSON_AddItemToArray(ambient,cJSON_CreateNumber(level->ambient_b));
+    }
+    cJSON *lights = cJSON_AddArrayToObject(root, "lights");
+    if (!lights) success = false;
+    for (int i = 0; success && i < level->light_count; ++i) {
+        const PointLight *l = &level->lights[i];
+        cJSON *item = cJSON_CreateObject();
+        if (!item) { success = false; break; }
+        cJSON_AddItemToArray(lights, item);
+        success =
+            cJSON_AddNumberToObject(item, "x", l->x) != NULL &&
+            cJSON_AddNumberToObject(item, "y", l->y) != NULL &&
+            cJSON_AddNumberToObject(item, "z", l->z) != NULL &&
+            cJSON_AddNumberToObject(item, "radius", l->radius) != NULL &&
+            cJSON_AddNumberToObject(item, "intensity", l->intensity) != NULL &&
+            cJSON_AddNumberToObject(item, "r", l->r) != NULL &&
+            cJSON_AddNumberToObject(item, "g", l->g) != NULL &&
+            cJSON_AddNumberToObject(item, "b", l->b) != NULL &&
+            cJSON_AddNumberToObject(item, "effect", l->effect) != NULL;
     }
 
     cJSON *spawn = cJSON_CreateObject();

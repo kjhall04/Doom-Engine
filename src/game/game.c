@@ -1,10 +1,12 @@
 #include "game.h"
 #include "engine/renderer/renderer.h"
+#include "engine/renderer/render_gpu.h"
 #include "engine/level/level_io.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 #include <SDL3/SDL.h>
 
 #define SDL_FLAGS SDL_INIT_VIDEO
@@ -13,27 +15,16 @@
 #define WINDOW_WIDTH 1920
 #define WINDOW_HEIGHT 1080
 
-static bool game_init_sdl(Game *game);
+static bool game_init_sdl(void);
 
 // Init SDL
-static bool game_init_sdl(Game *game) {
+static bool game_init_sdl(void) {
     if (!SDL_Init(SDL_FLAGS)) {
         fprintf(stderr, "Error initializing SDL3: %s\n", SDL_GetError());
         return false;
     }
 
-    game->window = SDL_CreateWindow(WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT, 0);
-    if (!game->window) {
-        fprintf(stderr, "Error creating Window: %s\n", SDL_GetError());
-        return false;
-    }
-
-    game->renderer = SDL_CreateRenderer(game->window, NULL);
-    if (!game->renderer) {
-        fprintf(stderr, "Error creating Renderer: %s\n", SDL_GetError());
-        return false;
-    }
-
+    /* Window and rendering backend are initialized after loading assets. */
     return true;
 }
 
@@ -60,7 +51,7 @@ static int game_find_spawn_sector(const Level *level, float x, float z) {
 }
 
 // Start new game instance
-bool game_new(struct Game **game) {
+bool game_new(struct Game **game, const char *renderer_mode) {
     *game = calloc(1, sizeof(struct Game));
     if (*game == NULL) {
         fprintf(stderr, "Error Calloc of New Game.\n");
@@ -68,7 +59,7 @@ bool game_new(struct Game **game) {
     }
     struct Game *g = *game;
 
-    if (!game_init_sdl(g)) {
+    if (!game_init_sdl()) {
         game_free(game);
         return false;
     }
@@ -78,12 +69,20 @@ bool game_new(struct Game **game) {
     input_init(&g->input);
     level_init(&g->level);
 
-    if (!level_load_json(&g->level, "levels/test_level.json")) {
-        SDL_Log("ERROR: Failed to load level.");
-
-        game_free(game);
-        return false;
+    /* Start with the lighting showcase when available; preserve the old test
+       level as a fallback for existing installations. */
+    const char *level_path = "levels/blacksite_12_world_lighting.json";
+    if (!level_load_json(&g->level, level_path)) {
+        level_path = "levels/test_level.json";
+        if (!level_load_json(&g->level, level_path)) {
+            SDL_Log("ERROR: Failed to load either startup level.");
+            game_free(game);
+            return false;
+        }
     }
+    SDL_Log("Loaded level: %s | point lights: %d | ambient: %.2f %.2f %.2f",
+            level_path, g->level.light_count,
+            g->level.ambient_r, g->level.ambient_g, g->level.ambient_b);
 
     // Level spawn stores angles in degrees; Player uses radians.
     const PlayerSpawn *spawn = &g->level.player_spawn;
@@ -117,6 +116,33 @@ bool game_new(struct Game **game) {
         }
     }
 
+    bool force_cpu = renderer_mode && strcmp(renderer_mode, "cpu") == 0;
+    bool force_gpu = renderer_mode && strcmp(renderer_mode, "gpu") == 0;
+    if (!force_cpu) {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+        g->window = SDL_CreateWindow(WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT,
+                                     SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+        if (g->window && render_gpu_init(g->window, &g->textures)) {
+            g->gpu_active = true;
+        } else {
+            SDL_Log("GPU backend unavailable; switching to CPU renderer");
+            if (g->window) SDL_DestroyWindow(g->window);
+            g->window = NULL;
+        }
+    }
+    if (!g->gpu_active) {
+        if (force_gpu) SDL_Log("Requested GPU renderer unavailable; CPU fallback enabled");
+        if (!g->window)
+            g->window = SDL_CreateWindow(WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT,
+                                         SDL_WINDOW_RESIZABLE);
+        if (!g->window) { game_free(game); return false; }
+        g->renderer = SDL_CreateRenderer(g->window, NULL);
+        if (!g->renderer) { game_free(game); return false; }
+        SDL_Log("CPU software rasterizer active");
+    }
     SDL_SetWindowRelativeMouseMode(g->window, true);
 
     g->is_running = true;
@@ -128,6 +154,8 @@ bool game_new(struct Game **game) {
 void game_free(struct Game **game) {
     if (*game) {
         struct Game *g = *game;
+
+        if (g->gpu_active) render_gpu_shutdown();
 
         if (g->renderer) {
             SDL_DestroyRenderer(g->renderer);
@@ -189,6 +217,10 @@ void game_update(Game *game, float delta_time) {
 
 // Draw the window
 void game_draw(Game *game) {
+    if (game->gpu_active) {
+        render_gpu_draw(game->window, &game->player, &game->level);
+        return;
+    }
     renderer_render(
         game->renderer,
         &game->player,

@@ -12,7 +12,8 @@ typedef enum EditorTool {
     EDITOR_TOOL_VERTEX,
     EDITOR_TOOL_WALL,
     EDITOR_TOOL_SECTOR,
-    EDITOR_TOOL_ROOM
+    EDITOR_TOOL_ROOM,
+    EDITOR_TOOL_LIGHT
 } EditorTool;
 
 typedef struct EditorViewport {
@@ -46,6 +47,8 @@ typedef struct EditorViewport {
     float room_start_x, room_start_z;
     float room_end_x, room_end_z;
     bool show_sector_fill;
+    int selected_light;
+    bool light_dragging;
 } EditorViewport;
 
 void editor_viewport_init(EditorViewport *viewport);

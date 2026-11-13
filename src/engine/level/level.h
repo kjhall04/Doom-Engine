@@ -22,7 +22,17 @@ typedef struct Sector {
 
     int floor_texture_id;
     int ceiling_texture_id;
+
+    int light_level; /* 0..255, default 255 */
+    int light_r, light_g, light_b; /* 0..255, default white */
 } Sector;
+
+typedef struct PointLight {
+    float x, y, z;
+    float radius, intensity;
+    int r, g, b;
+    int effect; /* 0 steady, 1 pulse, 2 flicker */
+} PointLight;
 
 typedef struct PlayerSpawn {
     float x;
@@ -42,6 +52,10 @@ typedef struct Level {
 
     Sector *sectors;
     int sector_count;
+
+    PointLight *lights;
+    int light_count;
+    float ambient_r, ambient_g, ambient_b;
 
     PlayerSpawn player_spawn;
 } Level;

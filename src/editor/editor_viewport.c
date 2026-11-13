@@ -53,6 +53,7 @@ void editor_viewport_init(EditorViewport *editor) {
     editor->wall_start_vertex = -1;
     editor->selected_wall = -1;
     editor->selected_sector = -1;
+    editor->selected_light = -1;
     editor->show_sector_fill = true;
 }
 
@@ -327,7 +328,7 @@ static int assign_face(Level *l, const int *edges, int count) {
         owner=l->sector_count++;
         l->sectors[owner]=inherit>=0 ? l->sectors[inherit] :
             (Sector){.floor_height=0,.ceiling_height=5,
-                     .floor_texture_id=3,.ceiling_texture_id=4};
+                     .floor_texture_id=3,.ceiling_texture_id=4,.light_level=255,.light_r=255,.light_g=255,.light_b=255};
         SDL_Log("Created sector %d from closed geometry",owner);
     }
     for (int i=0;i<count;i++) edge_assign(l,edges[i],owner);
@@ -393,7 +394,7 @@ static void auto_assign_closed_faces(Level *l) {
             claimed[owner]=0;
             l->sectors[owner]=inherit>=0?l->sectors[inherit]:
                 (Sector){.floor_height=0,.ceiling_height=5,
-                         .floor_texture_id=3,.ceiling_texture_id=4};
+                         .floor_texture_id=3,.ceiling_texture_id=4,.light_level=255,.light_r=255,.light_g=255,.light_b=255};
         }
         claimed[owner]=1;
         for (int i=0;i<n;i++) edge_assign(l,path[i],owner);
@@ -434,7 +435,7 @@ static int sector_at_point(Level *l,float x,float z,bool create,bool separate) {
                     int fresh=l->sector_count++;
                     l->sectors[fresh]=previous>=0 ? l->sectors[previous] :
                         (Sector){.floor_height=0,.ceiling_height=5,
-                                 .floor_texture_id=3,.ceiling_texture_id=4};
+                                 .floor_texture_id=3,.ceiling_texture_id=4,.light_level=255,.light_r=255,.light_g=255,.light_b=255};
                     for (int i=0;i<chosen_count;i++) edge_assign(l,chosen[i],fresh);
                     result=fresh;
                     SDL_Log("Separated room into new sector %d",fresh);
@@ -483,6 +484,7 @@ static void editor_set_tool(EditorViewport *editor, EditorTool tool)
     editor->spawn_dragging = false;
     editor->spawn_rotating = false;
     editor->room_dragging = false;
+    editor->light_dragging = false;
     SDL_Log("Editor tool: %s", tool == EDITOR_TOOL_VERTEX ? "VERTEX" :
             tool == EDITOR_TOOL_WALL ? "WALL" :
             tool == EDITOR_TOOL_SECTOR ? "SECTOR" : tool == EDITOR_TOOL_ROOM ? "DRAW ROOM" : "SELECT");
@@ -517,6 +519,16 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
             legend.actions[legend.action_count++] = "B  Set back (portal) to active";
             legend.actions[legend.action_count++] = "X  Clear back (solid wall)";
             break;
+        case EDITOR_TOOL_LIGHT:
+            legend.actions[legend.action_count++] = "Click empty grid: add point light";
+            legend.actions[legend.action_count++] = "Click light: select / drag";
+            legend.actions[legend.action_count++] = "Delete: remove selected light";
+            legend.actions[legend.action_count++] = "Arrows: change radius/intensity";
+            legend.actions[legend.action_count++] = "PgUp/Dn: change height";
+            legend.actions[legend.action_count++] = "C: cycle light color";
+            legend.actions[legend.action_count++] = "F: steady/pulse/flicker";
+            legend.actions[legend.action_count++] = "[ / ]: ambient light +/-";
+            break;
         case EDITOR_TOOL_ROOM:
             legend.actions[legend.action_count++] = "Drag empty grid to draw a room";
             legend.actions[legend.action_count++] = "Shared edges become portals";
@@ -543,16 +555,16 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
     const char *tools[] = {
         "1  Select / Move", "2  Vertex / Split Wall",
         "3  Draw Walls / Auto Portals", "4  Select / Edit Sectors",
-        "5  Draw Room (drag rectangle)"
+        "5  Draw Room (drag rectangle)", "6  Place / Edit Lights"
     };
     const char *general[] = {
         "Middle Drag  Pan view", "Wheel        Zoom",
         "G            Toggle grid snap", "Ctrl+S       Save",
         "Esc          Exit editor", "Ctrl+Z / Y   Undo / Redo",
-        "H            Toggle sector colors"
+        "H            Toggle sector colors", "6            Light editor"
     };
     size_t longest = SDL_strlen("ACTIVE TOOL: SECTOR");
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         size_t len = SDL_strlen(tools[i]);
         if (len > longest) longest = len;
     }
@@ -560,7 +572,7 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
         size_t len = SDL_strlen(legend.actions[i]);
         if (len > longest) longest = len;
     }
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         size_t len = SDL_strlen(general[i]);
         if (len > longest) longest = len;
     }
@@ -568,7 +580,7 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
     // Header + tools + actions + general, with section separators.
     /* Match the actual cursor increments in editor_draw_controls.
        Last line starts at y + 283 + action_count*15; reserve 12px below it. */
-    legend.height = 355.0f + legend.action_count * 15.0f;
+    legend.height = 385.0f + legend.action_count * 15.0f;
     return legend;
 }
 
@@ -593,17 +605,18 @@ static bool editor_point_in_panel(const EditorViewport *editor,
 #define INSPECTOR_TOP 12.0f
 #define INSPECTOR_ROW 24.0f
 #define INSPECTOR_FIRST 64.0f
-#define INSPECTOR_ROWS 7
+#define INSPECTOR_ROWS 9
 #define INSPECTOR_BOTTOM_PAD 12.0f
 
 static int inspector_row_count(int mode) {
-    return mode == 1 ? 2 : mode == 2 ? 5 : mode == 3 ? 5 : mode == 4 ? 5 : 2;
+    return mode == 1 ? 2 : mode == 2 ? 5 : mode == 3 ? 9 : mode == 4 ? 5 : mode == 5 ? 9 : 2;
 }
 static float inspector_panel_height(int mode) {
     return INSPECTOR_FIRST + inspector_row_count(mode) * INSPECTOR_ROW + INSPECTOR_BOTTOM_PAD;
 }
 static float inspector_x(int width) { return (float)width - INSPECTOR_WIDTH - 12.0f; }
 static int inspector_mode(const EditorViewport *ed, const Level *l) {
+    if(ed->active_tool==EDITOR_TOOL_LIGHT && ed->selected_light>=0 && ed->selected_light<l->light_count) return 5;
     if (ed->active_tool == EDITOR_TOOL_WALL && ed->selected_wall >= 0 && ed->selected_wall < l->wall_count) return 2;
     if (ed->active_tool == EDITOR_TOOL_SECTOR && ed->selected_sector >= 0 && ed->selected_sector < l->sector_count) return 3;
     if (ed->spawn_selected && ed->active_tool == EDITOR_TOOL_SELECT) return 4;
@@ -648,6 +661,26 @@ static bool inspector_click(EditorViewport *ed, Level *l, int width, int height,
         if (row==2 && sc->ceiling_height+delta*step>sc->floor_height) sc->ceiling_height+=delta*step;
         if (row==3 && sc->floor_texture_id+delta>=0) sc->floor_texture_id+=delta;
         if (row==4 && sc->ceiling_texture_id+delta>=0) sc->ceiling_texture_id+=delta;
+        int *light_fields[] = {&sc->light_level, &sc->light_r, &sc->light_g, &sc->light_b};
+        if (row>=5 && row<=8) {
+            int *field=light_fields[row-5];
+            int next=*field+delta*(fine?1:16);
+            *field=next<0?0:(next>255?255:next);
+        }
+    } else if(mode==5) {
+        PointLight *light=&l->lights[ed->selected_light];
+        if(row==0) light->x+=delta*step;
+        if(row==1) light->y+=delta*step;
+        if(row==2) light->z+=delta*step;
+        if(row==3) light->radius=fmaxf(0.5f,fminf(1000.0f,light->radius+delta*(fine?0.1f:1.0f)));
+        if(row==4) light->intensity=fmaxf(0.0f,fminf(100.0f,light->intensity+delta*(fine?0.05f:0.2f)));
+        int *rgb[]={&light->r,&light->g,&light->b};
+        if(row>=5 && row<=7) {
+            int *v=rgb[row-5]; *v+=delta*(fine?1:16);
+            if(*v<0)*v=0;
+            if(*v>255)*v=255;
+        }
+        if(row==8) light->effect=(light->effect+delta+3)%3;
     } else if (mode==4) {
         PlayerSpawn *sp=&l->player_spawn;
         if (row==0) sp->x+=delta*step;
@@ -788,6 +821,7 @@ static void snapshot_dispose(EditorSnapshot *s) {
     free(s->level.vertices);
     free(s->level.walls);
     free(s->level.sectors);
+    free(s->level.lights);
     memset(s,0,sizeof(*s));
 }
 static bool snapshot_take(EditorSnapshot *s, const Level *l, const EditorViewport *ed) {
@@ -796,6 +830,7 @@ static bool snapshot_take(EditorSnapshot *s, const Level *l, const EditorViewpor
     s->level.vertices=NULL;
     s->level.walls=NULL;
     s->level.sectors=NULL;
+    s->level.lights=NULL;
     if (l->vertex_count>0) {
         s->level.vertices=malloc((size_t)l->vertex_count*sizeof(Vertex));
         if (!s->level.vertices) goto fail;
@@ -811,6 +846,11 @@ static bool snapshot_take(EditorSnapshot *s, const Level *l, const EditorViewpor
         if (!s->level.sectors) goto fail;
         memcpy(s->level.sectors,l->sectors,(size_t)l->sector_count*sizeof(Sector));
     }
+    if(l->light_count>0) {
+        s->level.lights=malloc((size_t)l->light_count*sizeof(PointLight));
+        if(!s->level.lights) goto fail;
+        memcpy(s->level.lights,l->lights,(size_t)l->light_count*sizeof(PointLight));
+    }
     s->selected_vertex=ed->selected_vertex;
     s->selected_wall=ed->selected_wall;
     s->selected_sector=ed->selected_sector;
@@ -821,13 +861,16 @@ fail:
     return false;
 }
 static bool snapshot_differs(const EditorSnapshot *s, const Level *l) {
-    if (s->level.vertex_count!=l->vertex_count ||
+    if (s->level.light_count!=l->light_count ||
+        s->level.ambient_r!=l->ambient_r || s->level.ambient_g!=l->ambient_g || s->level.ambient_b!=l->ambient_b ||
+        s->level.vertex_count!=l->vertex_count ||
         s->level.wall_count!=l->wall_count ||
         s->level.sector_count!=l->sector_count) return true;
     if (memcmp(&s->level.player_spawn,&l->player_spawn,sizeof(PlayerSpawn))) return true;
     if (l->vertex_count && memcmp(s->level.vertices,l->vertices,(size_t)l->vertex_count*sizeof(Vertex))) return true;
     if (l->wall_count && memcmp(s->level.walls,l->walls,(size_t)l->wall_count*sizeof(Wall))) return true;
     if (l->sector_count && memcmp(s->level.sectors,l->sectors,(size_t)l->sector_count*sizeof(Sector))) return true;
+    if (l->light_count && memcmp(s->level.lights,l->lights,(size_t)l->light_count*sizeof(PointLight))) return true;
     return false;
 }
 static void history_clear(EditorSnapshot *stack,int *count) {
@@ -850,9 +893,10 @@ static void history_commit(EditorSnapshot *before,const Level *l) {
     } else snapshot_dispose(before);
 }
 static void history_apply(EditorSnapshot *s,Level *l,EditorViewport *ed) {
-    free(l->vertices); free(l->walls); free(l->sectors);
+    free(l->vertices); free(l->walls); free(l->sectors); free(l->lights);
     *l=s->level;
     ed->selected_vertex=s->selected_vertex;
+    ed->selected_light=-1; ed->light_dragging=false;
     ed->selected_wall=s->selected_wall;
     ed->selected_sector=s->selected_sector;
     ed->spawn_selected=s->spawn_selected;
@@ -994,14 +1038,35 @@ static void editor_process_event_impl(
             float ty=event->button.y-12.0f;
             if (event->button.x>=24.0f && event->button.x<=12.0f+pw &&
                 event->button.y>=12.0f && event->button.y<=12.0f+ph &&
-                ty>=95.0f && ty<170.0f) {
+                ty>=95.0f && ty<185.0f) {
                 int which=(int)((ty-95.0f)/15.0f);
-                if (which>=0 && which<5) editor_set_tool(editor,(EditorTool)which);
+                if (which>=0 && which<6) editor_set_tool(editor,(EditorTool)which);
                 return;
             }
             if (inspector_click(editor, level, width, height, event->button.x, event->button.y)) return;
             if (editor_point_in_panel(editor, event->button.x, event->button.y, width, height)) return;
 
+            if (editor->active_tool == EDITOR_TOOL_LIGHT) {
+                for(int i=level->light_count-1;i>=0;i--) {
+                    float sx,sy;
+                    world_to_screen(editor,level->lights[i].x,level->lights[i].z,width,height,&sx,&sy);
+                    float dx=sx-event->button.x,dy=sy-event->button.y;
+                    if(dx*dx+dy*dy<144.0f) {
+                        editor->selected_light=i; editor->light_dragging=true; return;
+                    }
+                }
+                if(level->light_count>=1024) return;
+                PointLight *new_lights=realloc(level->lights,(size_t)(level->light_count+1)*sizeof(PointLight));
+                if(!new_lights) return;
+                level->lights=new_lights;
+                int i=level->light_count++;
+                PointLight *light=&level->lights[i];
+                screen_to_world(editor,width,height,event->button.x,event->button.y,&light->x,&light->z);
+                light->y=2.5f; light->radius=8.0f; light->intensity=1.2f;
+                light->r=255;light->g=210;light->b=150;light->effect=0;
+                editor->selected_light=i;
+                return;
+            }
             if (editor->active_tool == EDITOR_TOOL_ROOM) {
                 screen_to_world(editor,width,height,event->button.x,event->button.y,
                     &editor->room_start_x,&editor->room_start_z);
@@ -1106,6 +1171,7 @@ static void editor_process_event_impl(
             bool clicked_spawn =
                 dx * dx + dy * dy <= 144.0f;
 
+            editor->light_dragging = false;
             editor->spawn_dragging = false;
             editor->vertex_dragging = false;
             editor->spawn_rotating = false;
@@ -1179,6 +1245,7 @@ static void editor_process_event_impl(
                     if (sector>=0) editor->selected_sector=sector;
                 }
             }
+            editor->light_dragging = false;
             editor->spawn_dragging = false;
             editor->vertex_dragging = false;
         }
@@ -1192,6 +1259,10 @@ static void editor_process_event_impl(
                 editor->room_end_x=editor_snap_value(editor->room_end_x,editor->grid_size);
                 editor->room_end_z=editor_snap_value(editor->room_end_z,editor->grid_size);
             }
+        }
+        if(editor->light_dragging && editor->selected_light>=0 && editor->selected_light<level->light_count) {
+            PointLight *light=&level->lights[editor->selected_light];
+            screen_to_world(editor,width,height,event->motion.x,event->motion.y,&light->x,&light->z);
         }
         if (editor->panning) {
             editor->camera_x -= event->motion.xrel / editor->zoom;
@@ -1266,6 +1337,34 @@ static void editor_process_event_impl(
         editor->snap_enabled = !editor->snap_enabled;
     }
 
+    if(event->type==SDL_EVENT_KEY_DOWN && !event->key.repeat &&
+       editor->active_tool==EDITOR_TOOL_LIGHT &&
+       editor->selected_light>=0 && editor->selected_light<level->light_count) {
+        PointLight *light=&level->lights[editor->selected_light];
+        switch(event->key.scancode) {
+            case SDL_SCANCODE_LEFTBRACKET:
+            case SDL_SCANCODE_RIGHTBRACKET: {
+                float delta=event->key.scancode==SDL_SCANCODE_RIGHTBRACKET?0.05f:-0.05f;
+                level->ambient_r=fmaxf(0.0f,fminf(1.0f,level->ambient_r+delta));
+                level->ambient_g=fmaxf(0.0f,fminf(1.0f,level->ambient_g+delta));
+                level->ambient_b=fmaxf(0.0f,fminf(1.0f,level->ambient_b+delta));return;
+            }
+            case SDL_SCANCODE_UP: light->radius=fminf(100.0f,light->radius+1.0f);return;
+            case SDL_SCANCODE_DOWN: light->radius=fmaxf(0.5f,light->radius-1.0f);return;
+            case SDL_SCANCODE_RIGHT: light->intensity=fminf(10.0f,light->intensity+0.2f);return;
+            case SDL_SCANCODE_LEFT: light->intensity=fmaxf(0.0f,light->intensity-0.2f);return;
+            case SDL_SCANCODE_PAGEUP: light->y+=0.25f;return;
+            case SDL_SCANCODE_PAGEDOWN: light->y-=0.25f;return;
+            case SDL_SCANCODE_F: light->effect=(light->effect+1)%3;return;
+            case SDL_SCANCODE_C: {
+                static const int colors[][3]={{255,210,150},{255,65,45},{80,160,255},{100,255,140},{255,255,255}};
+                int next=0;
+                for(int i=0;i<5;i++) if(light->r==colors[i][0] && light->g==colors[i][1] && light->b==colors[i][2]) next=(i+1)%5;
+                light->r=colors[next][0];light->g=colors[next][1];light->b=colors[next][2];return;
+            }
+            default:break;
+        }
+    }
     if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat) {
         switch (event->key.scancode) {
             case SDL_SCANCODE_1: editor_set_tool(editor, EDITOR_TOOL_SELECT); return;
@@ -1273,6 +1372,7 @@ static void editor_process_event_impl(
             case SDL_SCANCODE_3: editor_set_tool(editor, EDITOR_TOOL_WALL); return;
             case SDL_SCANCODE_4: editor_set_tool(editor, EDITOR_TOOL_SECTOR); return;
             case SDL_SCANCODE_5: editor_set_tool(editor, EDITOR_TOOL_ROOM); return;
+            case SDL_SCANCODE_6: editor_set_tool(editor, EDITOR_TOOL_LIGHT); return;
             case SDL_SCANCODE_H: editor->show_sector_fill=!editor->show_sector_fill;return;
             case SDL_SCANCODE_ESCAPE:
                 if (editor->active_tool == EDITOR_TOOL_WALL &&
@@ -1390,7 +1490,13 @@ void editor_viewport_process_event(EditorViewport *ed,SDL_Renderer *renderer,
     bool captured=(down || (up && ed->active_tool==EDITOR_TOOL_ROOM && ed->room_dragging) ||
                    (key && event->key.scancode!=SDL_SCANCODE_R)) &&
                   snapshot_take(&before,l,ed);
-    if (key && (event->key.scancode==SDL_SCANCODE_DELETE ||
+    if(key && ed->active_tool==EDITOR_TOOL_LIGHT && ed->selected_light>=0 &&
+       ed->selected_light<l->light_count &&
+       (event->key.scancode==SDL_SCANCODE_DELETE || event->key.scancode==SDL_SCANCODE_BACKSPACE)) {
+        int i=ed->selected_light;
+        memmove(l->lights+i,l->lights+i+1,(size_t)(l->light_count-i-1)*sizeof(PointLight));
+        l->light_count--; ed->selected_light=-1;
+    } else if (key && (event->key.scancode==SDL_SCANCODE_DELETE ||
                 event->key.scancode==SDL_SCANCODE_BACKSPACE)) {
         editor_delete_selection(ed,l);
     } else {
@@ -1405,7 +1511,7 @@ void editor_viewport_process_event(EditorViewport *ed,SDL_Renderer *renderer,
             /* Do not let inspector coordinates or other edits corrupt the map. */
             history_apply(&before,l,ed);
             SDL_Log("Edit rejected: overlapping or intersecting geometry");
-        } else if (down && (ed->vertex_dragging || ed->spawn_dragging)) {
+        } else if (down && (ed->vertex_dragging || ed->spawn_dragging || ed->light_dragging)) {
             if (drag_pending) snapshot_dispose(&drag_start);
             drag_start=before;
             drag_pending=true;
@@ -1698,9 +1804,9 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
     const char *tools[] = {
         "1  Select / Move", "2  Vertex / Split Wall",
         "3  Draw Walls / Auto Portals", "4  Select / Edit Sectors",
-        "5  Draw Room (drag rectangle)"
+        "5  Draw Room (drag rectangle)", "6  Place / Edit Lights"
     };
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         SDL_SetRenderDrawColor(renderer, i == (int)editor->active_tool ? 255 : 220,
             i == (int)editor->active_tool ? 215 : 225,
             i == (int)editor->active_tool ? 95 : 235, 255);
@@ -1731,9 +1837,9 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
         "Middle Drag  Pan view", "Wheel        Zoom",
         "G            Toggle grid snap", "Ctrl+S       Save",
         "Esc          Exit editor", "Ctrl+Z / Y   Undo / Redo",
-        "H            Toggle sector colors"
+        "H            Toggle sector colors", "6            Light editor"
     };
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         SDL_RenderDebugText(renderer, x + pad, cursor, general[i]);
         cursor += 15.0f;
     }
@@ -1756,7 +1862,7 @@ static void editor_draw_properties(SDL_Renderer *renderer,
     SDL_RenderRect(renderer,&bg);
     SDL_Rect inspector_clip={(int)x+1,(int)y+1,(int)INSPECTOR_WIDTH-2,(int)panel_height-2};
     SDL_SetRenderClipRect(renderer,&inspector_clip);
-    const char *heading=mode==1?"VERTEX":mode==2?"WALL":mode==3?"SECTOR":mode==4?"PLAYER SPAWN":"PROPERTIES";
+    const char *heading=mode==1?"VERTEX":mode==2?"WALL":mode==3?"SECTOR":mode==4?"PLAYER SPAWN":mode==5?"POINT LIGHT":"PROPERTIES";
     SDL_SetRenderDrawColor(renderer,255,215,95,255);
     SDL_RenderDebugText(renderer,x+12,y+12,heading);
     SDL_SetRenderDrawColor(renderer,175,190,205,255);
@@ -1784,6 +1890,21 @@ static void editor_draw_properties(SDL_Renderer *renderer,
         snprintf(rows[count++],80,"Ceiling: %.2f",sc->ceiling_height);
         snprintf(rows[count++],80,"Floor texture: %d",sc->floor_texture_id);
         snprintf(rows[count++],80,"Ceiling texture: %d",sc->ceiling_texture_id);
+        snprintf(rows[count++],80,"Brightness: %d",sc->light_level);
+        snprintf(rows[count++],80,"Light red: %d",sc->light_r);
+        snprintf(rows[count++],80,"Light green: %d",sc->light_g);
+        snprintf(rows[count++],80,"Light blue: %d",sc->light_b);
+    } else if(mode==5) {
+        const PointLight *light=&level->lights[editor->selected_light];
+        snprintf(rows[count++],80,"X: %.2f",light->x);
+        snprintf(rows[count++],80,"Y: %.2f",light->y);
+        snprintf(rows[count++],80,"Z: %.2f",light->z);
+        snprintf(rows[count++],80,"Radius: %.2f",light->radius);
+        snprintf(rows[count++],80,"Intensity: %.2f",light->intensity);
+        snprintf(rows[count++],80,"Red: %d",light->r);
+        snprintf(rows[count++],80,"Green: %d",light->g);
+        snprintf(rows[count++],80,"Blue: %d",light->b);
+        snprintf(rows[count++],80,"Effect: %d",light->effect);
     } else if(mode==4) {
         const PlayerSpawn *sp=&level->player_spawn;
         snprintf(rows[count++],80,"X: %.2f",sp->x);
@@ -1804,7 +1925,7 @@ static void editor_draw_properties(SDL_Renderer *renderer,
         snprintf(visible_label,sizeof(visible_label),"%.24s",rows[i]);
         SDL_RenderDebugText(renderer,x+12,yy+5,visible_label);
         bool editable=(mode==1 && i<2)||(mode==2 && i<3)||
-                      (mode==3 && i<5)||(mode==4 && i<5);
+                      (mode==3 && i<5)||(mode==4 && i<5)||(mode==5 && i<9);
         if(!editable)continue;
         SDL_FRect minus={x+218,yy,28,19},plus={x+251,yy,29,19};
         SDL_SetRenderDrawColor(renderer,53,65,82,255);
@@ -1908,6 +2029,23 @@ void editor_viewport_render(
     editor_draw_vertices(renderer, editor, level, width, height);
     editor_draw_spawn(renderer, editor, level, width, height);
 
+    for(int i=0;i<level->light_count;i++) {
+        const PointLight *light=&level->lights[i];
+        float sx,sy;
+        world_to_screen(editor,light->x,light->z,width,height,&sx,&sy);
+        SDL_SetRenderDrawColor(renderer,(Uint8)light->r,(Uint8)light->g,(Uint8)light->b,255);
+        SDL_FRect marker={sx-5,sy-5,10,10};
+        SDL_RenderFillRect(renderer,&marker);
+        if(editor->selected_light==i && editor->active_tool==EDITOR_TOOL_LIGHT) {
+            float radius=light->radius*editor->zoom;
+            SDL_FRect outline={sx-radius,sy-radius,2*radius,2*radius};
+            SDL_RenderRect(renderer,&outline);
+            char info[160];
+            snprintf(info,sizeof(info),"Light %d  Y %.2f  Radius %.1f  Intensity %.1f  RGB %d,%d,%d  Effect %d",
+                     i,light->y,light->radius,light->intensity,light->r,light->g,light->b,light->effect);
+            SDL_RenderDebugText(renderer,20,(float)height-28,info);
+        }
+    }
     editor_draw_controls(renderer, editor);
     editor_draw_properties(renderer, editor, level);
 

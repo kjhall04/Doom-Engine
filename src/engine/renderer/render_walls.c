@@ -4,6 +4,7 @@
 #include "render_sector_traversal.h"
 #include "render_planes.h"
 #include "render_raster.h"
+#include "render_lighting.h"
 #include "engine/textures/texture.h"
 
 #include <SDL3/SDL_timer.h>
@@ -256,6 +257,10 @@ static int wall_clip_textured_polygon(
 }
 
 
+static const Level *active_light_level;
+static float *active_light_factors;
+static unsigned char wall_light_r = 255, wall_light_g = 255, wall_light_b = 255;
+
 static void wall_draw_section(
     const Player *player,
     const Vertex *start,
@@ -362,10 +367,21 @@ static void wall_draw_section(
         .x_max = wall_clip_range.right,
         .y_min = wall_clip_range.top,
         .y_max = wall_clip_range.bottom,
+        .light_r = wall_light_r, .light_g = wall_light_g, .light_b = wall_light_b,
         .clip_top = buffers.clip_top,
         .clip_bottom = buffers.clip_bottom
     };
 
+    target.world_origin[0]=start->x; target.world_origin[1]=0; target.world_origin[2]=start->z;
+    target.world_u[0]=(end->x-start->x)/wall_length;
+    target.world_u[1]=0; target.world_u[2]=(end->z-start->z)/wall_length;
+    target.world_v[0]=0; target.world_v[1]=1; target.world_v[2]=0;
+    render_light_target(&target, active_light_level, active_light_factors);
+    PointLight local_lights[64]; float local_factors[64];
+    const float minv[3]={fminf(start->x,end->x),bottom_height,fminf(start->z,end->z)};
+    const float maxv[3]={fmaxf(start->x,end->x),top_height,fmaxf(start->z,end->z)};
+    render_light_cull(&target,active_light_level,active_light_factors,minv,maxv,
+                      local_lights,local_factors);
     const Texture *texture =
         texture_manager_get(buffers.textures, texture_id);
 
@@ -431,6 +447,10 @@ static void wall_draw_segment(
 
     const Sector *front =
         &level->sectors[wall->front_sector];
+
+    wall_light_r = (unsigned char)(front->light_r * front->light_level / 255);
+    wall_light_g = (unsigned char)(front->light_g * front->light_level / 255);
+    wall_light_b = (unsigned char)(front->light_b * front->light_level / 255);
 
     /* Use the union of both sectors' heights so this early test cannot
      * discard a visible upper/lower portal wall section. */
@@ -581,6 +601,8 @@ void render_walls_draw_solid(
     }
 
     buffers.textures = textures;
+    active_light_level = level;
+    active_light_factors = render_light_factors(level);
 
     wall_clip_reset(screen_width, screen_height);
     wall_clip_vertical_reset();
@@ -635,6 +657,9 @@ void render_walls_draw_solid(
     raster_ticks += stage_end - stage_start;
     stage_start = stage_end;
 
+    free(active_light_factors);
+    active_light_factors=NULL;
+    active_light_level=NULL;
     /* Floors and ceilings share the inverse-depth buffer with the walls. */
     render_planes_draw(
         player,

@@ -8,6 +8,51 @@
 
 #define SECTOR_WALL_SORT_MAX 128
 
+/* Compact sector-to-wall adjacency, rebuilt once per traversal call.
+ * This avoids scanning all walls on every recursive sector visit and remains
+ * correct when the editor modifies geometry in-place. */
+typedef struct SectorWallIndex {
+    int *offsets;
+    int *wall_ids;
+    int sector_count;
+} SectorWallIndex;
+
+static bool sector_wall_index_build(const Level *level, SectorWallIndex *index) {
+    memset(index, 0, sizeof(*index));
+    const int sectors = level->sector_count;
+    if (sectors <= 0 || level->wall_count < 0) return false;
+    index->offsets = calloc((size_t)sectors + 1, sizeof(int));
+    if (!index->offsets) return false;
+    index->sector_count = sectors;
+    for (int w = 0; w < level->wall_count; ++w) {
+        const Wall *wall = &level->walls[w];
+        int a = wall->front_sector, b = wall->back_sector;
+        if (a >= 0 && a < sectors) ++index->offsets[a + 1];
+        if (b >= 0 && b < sectors && b != a) ++index->offsets[b + 1];
+    }
+    for (int i = 1; i <= sectors; ++i) index->offsets[i] += index->offsets[i - 1];
+    int total = index->offsets[sectors];
+    index->wall_ids = malloc((size_t)(total > 0 ? total : 1) * sizeof(int));
+    int *cursor = malloc((size_t)sectors * sizeof(int));
+    if (!index->wall_ids || !cursor) {
+        free(cursor); free(index->offsets); free(index->wall_ids);
+        memset(index, 0, sizeof(*index)); return false;
+    }
+    memcpy(cursor, index->offsets, (size_t)sectors * sizeof(int));
+    for (int w = 0; w < level->wall_count; ++w) {
+        const Wall *wall = &level->walls[w];
+        int a = wall->front_sector, b = wall->back_sector;
+        if (a >= 0 && a < sectors) index->wall_ids[cursor[a]++] = w;
+        if (b >= 0 && b < sectors && b != a) index->wall_ids[cursor[b]++] = w;
+    }
+    free(cursor);
+    return true;
+}
+
+static void sector_wall_index_free(SectorWallIndex *index) {
+    free(index->offsets); free(index->wall_ids);
+}
+
 typedef struct SectorWallKey {
     int wall;
     float distance;
@@ -75,7 +120,8 @@ static void traverse_sector(
     RenderPortalClip *clip,
     RenderWallDrawCallback draw_wall,
     void *userdata,
-    RenderSectorVisit *visits
+    RenderSectorVisit *visits,
+    const SectorWallIndex *index
 ) {
     if (sector_index < 0 ||
         sector_index >= level->sector_count ||
@@ -100,7 +146,8 @@ static void traverse_sector(
     int key_count = 0;
     bool sortable = true;
 
-    for (int i = 0; i < level->wall_count; i++) {
+    for (int entry = index->offsets[sector_index]; entry < index->offsets[sector_index + 1]; ++entry) {
+        int i = index->wall_ids[entry];
         const Wall *wall = &level->walls[i];
 
         if (wall->front_sector != sector_index &&
@@ -137,7 +184,8 @@ static void traverse_sector(
                       userdata);
         }
     } else {
-        for (int i = 0; i < level->wall_count; i++) {
+        for (int entry = index->offsets[sector_index]; entry < index->offsets[sector_index + 1]; ++entry) {
+            int i = index->wall_ids[entry];
             const Wall *wall = &level->walls[i];
 
             if (wall->front_sector != sector_index &&
@@ -149,7 +197,8 @@ static void traverse_sector(
         }
     }
 
-    for (int i = 0; i < level->wall_count; i++) {
+    for (int entry = index->offsets[sector_index]; entry < index->offsets[sector_index + 1]; ++entry) {
+        int i = index->wall_ids[entry];
         const Wall *wall = &level->walls[i];
 
         int neighbor = -1;
@@ -260,7 +309,7 @@ static void traverse_sector(
         if (portal_visible) {
             traverse_sector(
                 player, level, neighbor, active_path,
-                depth + 1, clip, draw_wall, userdata, visits
+                depth + 1, clip, draw_wall, userdata, visits, index
             );
         }
 
@@ -332,10 +381,13 @@ void render_sector_traverse(
     scratch_used = 0;
     scratch_reserve((size_t)clip->width * 2 * SCRATCH_DEPTH);
 
-    if (level->sector_count > 0 && player->sector >= 0 &&
+    SectorWallIndex index;
+    bool indexed = sector_wall_index_build(level, &index);
+
+    if (indexed && level->sector_count > 0 && player->sector >= 0 &&
         player->sector < level->sector_count) {
         traverse_sector(player, level, player->sector, active_path,
-                        0, clip, draw_wall, userdata, visits);
+                        0, clip, draw_wall, userdata, visits, &index);
     } else {
         /* Match the original renderer's fallback if sector tracking fails:
          * draw every wall and treat every sector as visible. */
@@ -350,4 +402,5 @@ void render_sector_traverse(
             draw_wall(player, &level->walls[i], level, clip, userdata);
         }
     }
+    if (indexed) sector_wall_index_free(&index);
 }

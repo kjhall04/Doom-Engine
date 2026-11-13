@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "engine/textures/texture.h"
+#include "engine/level/level.h"
 
 /*
  * Shared scanline rasterizer used by the wall and plane renderers.
@@ -36,6 +37,14 @@ typedef struct RasterTarget {
     int y_min;                  /* inclusive row window */
     int y_max;
 
+    unsigned char light_r, light_g, light_b; /* combined sector lighting */
+
+    /* Texture-coordinate-to-world mapping: world = origin + u*axis_u + v*axis_v. */
+    float world_origin[3], world_u[3], world_v[3];
+    const PointLight *lights;
+    const float *light_factors;
+    int light_count;
+    float ambient[3];
     const int *clip_top;        /* optional per-column inclusive window */
     const int *clip_bottom;
 } RasterTarget;

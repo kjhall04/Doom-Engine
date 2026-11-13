@@ -1,6 +1,7 @@
 #include "render_planes.h"
 #include "render_camera.h"
 #include "render_raster.h"
+#include "render_lighting.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -501,10 +502,12 @@ static void draw_world_triangle(
         }
     }
 
+    RasterTarget local_target=*target;
+    local_target.world_origin[1]=elevation;
     // Triangulate the clipped polygon.
     for (int i = 1; i + 1 < n; ++i) {
         render_raster_triangle(
-            target,
+            &local_target,
             &screen[0],
             &screen[i],
             &screen[i + 1],
@@ -542,9 +545,13 @@ void render_planes_draw(
         .clip_bottom = NULL
     };
 
+    float *light_factors=render_light_factors(level);
+    render_light_target(&target, level, light_factors);
+    target.world_u[0]=1.0f;
+    target.world_v[2]=1.0f;
     /* Draw nearest sectors first so farther floors and ceilings are
      * rejected by the depth test instead of being overwritten. */
-    if (!plane_order_prepare(player, level, visits)) return;
+    if (!plane_order_prepare(player, level, visits)) { free(light_factors); return; }
 
     for (int slot = 0; slot < plane_order_count; ++slot) {
         const int sector = plane_order[slot].sector;
@@ -560,6 +567,14 @@ void render_planes_draw(
         }
 
         const Sector *sector_data = &level->sectors[sector];
+        target.light_r = (unsigned char)(sector_data->light_r * sector_data->light_level / 255);
+        target.light_g = (unsigned char)(sector_data->light_g * sector_data->light_level / 255);
+        target.light_b = (unsigned char)(sector_data->light_b * sector_data->light_level / 255);
+        PointLight local_lights[64]; float local_factors[64];
+        const float minv[3]={geometry->min_x,sector_data->floor_height,geometry->min_z};
+        const float maxv[3]={geometry->max_x,sector_data->ceiling_height,geometry->max_z};
+        render_light_cull(&target,level,light_factors,minv,maxv,local_lights,local_factors);
+
 
         if (sector_outside_view(player, sector_data, geometry, width, height))
             continue;
@@ -589,4 +604,5 @@ void render_planes_draw(
             );
         }
     }
+    free(light_factors);
 }

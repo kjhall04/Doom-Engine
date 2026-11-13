@@ -12,6 +12,7 @@
 typedef struct Game {
     SDL_Window *window;
     SDL_Renderer *renderer;
+    bool gpu_active;
     SDL_Event event;
 
     bool is_running;
@@ -22,7 +23,7 @@ typedef struct Game {
     TextureManager textures;
 } Game;
 
-bool game_new(Game **game);
+bool game_new(Game **game, const char *renderer_mode);
 void game_free(Game **game);
 
 void game_events(Game *game);

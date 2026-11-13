@@ -21,6 +21,7 @@ add_library(EngineCore STATIC
     src/engine/textures/texture_manager.c
 
     src/engine/renderer/renderer.c
+    src/engine/renderer/render_gpu.c
     src/engine/renderer/render_camera.c
     src/engine/renderer/render_raster.c
     src/engine/renderer/render_walls.c
@@ -38,6 +39,12 @@ target_include_directories(EngineCore PUBLIC
 target_link_libraries(EngineCore PUBLIC
     SDL3::SDL3
 )
+if(WIN32)
+    target_link_libraries(EngineCore PUBLIC opengl32)
+else()
+    find_package(OpenGL REQUIRED)
+    target_link_libraries(EngineCore PUBLIC OpenGL::GL)
+endif()
 
 # --------------------------------------------------
 # Game executable
