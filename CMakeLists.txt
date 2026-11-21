@@ -68,7 +68,10 @@ target_link_libraries(GameEngine PRIVATE
 add_executable(LevelEditor
     src/editor/main.c
     src/editor/editor.c
-    src/editor/editor_viewport.c
+    src/editor/editor_canvas.c
+    src/editor/editor_model.c
+    src/editor/editor_panels.c
+    src/editor/ui.c
 )
 
 target_link_libraries(LevelEditor PRIVATE

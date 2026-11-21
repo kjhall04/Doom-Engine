@@ -23,7 +23,7 @@ typedef struct Game {
     TextureManager textures;
 } Game;
 
-bool game_new(Game **game, const char *renderer_mode);
+bool game_new(Game **game, const char *renderer_mode, const char *level_override);
 void game_free(Game **game);
 
 void game_events(Game *game);

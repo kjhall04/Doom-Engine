@@ -28,9 +28,9 @@ static void world_to_screen(
         (world_z - editor->camera_z) * editor->zoom;
 }
 
-static void editor_history_reset(void);
+void editor_viewport_clear_history(void);
 void editor_viewport_init(EditorViewport *editor) {
-    editor_history_reset();
+    editor_viewport_clear_history();
     *editor = (EditorViewport){0};
 
     editor->camera_x = 0.0f;
@@ -487,7 +487,8 @@ static void editor_set_tool(EditorViewport *editor, EditorTool tool)
     editor->light_dragging = false;
     SDL_Log("Editor tool: %s", tool == EDITOR_TOOL_VERTEX ? "VERTEX" :
             tool == EDITOR_TOOL_WALL ? "WALL" :
-            tool == EDITOR_TOOL_SECTOR ? "SECTOR" : tool == EDITOR_TOOL_ROOM ? "DRAW ROOM" : "SELECT");
+            tool == EDITOR_TOOL_SECTOR ? "SECTOR" : tool == EDITOR_TOOL_ROOM ? "DRAW ROOM" :
+            tool == EDITOR_TOOL_CORRIDOR ? "CORRIDOR" : tool == EDITOR_TOOL_LIGHT ? "LIGHT" : "SELECT");
 }
 
 // Shared legend content is used for both rendering and mouse hit testing.
@@ -529,6 +530,13 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
             legend.actions[legend.action_count++] = "F: steady/pulse/flicker";
             legend.actions[legend.action_count++] = "[ / ]: ambient light +/-";
             break;
+        case EDITOR_TOOL_CORRIDOR:
+            legend.actions[legend.action_count++] = "Drag along passage axis (horizontal/vertical)";
+            legend.actions[legend.action_count++] = "Creates 2-unit-wide connecting sector";
+            legend.actions[legend.action_count++] = "End edges must meet room boundaries";
+            legend.actions[legend.action_count++] = "Shared edges become portals automatically";
+            legend.actions[legend.action_count++] = "Right click cancels passage";
+            break;
         case EDITOR_TOOL_ROOM:
             legend.actions[legend.action_count++] = "Drag empty grid to draw a room";
             legend.actions[legend.action_count++] = "Shared edges become portals";
@@ -559,7 +567,8 @@ static EditorLegend editor_build_legend(const EditorViewport *editor)
     };
     const char *general[] = {
         "Middle Drag  Pan view", "Wheel        Zoom",
-        "G            Toggle grid snap", "Ctrl+S       Save",
+        "G            Toggle grid snap", "Ctrl+O       Open level",
+        "Ctrl+S       Save", "Ctrl+Shift+S  Save As",
         "Esc          Exit editor", "Ctrl+Z / Y   Undo / Redo",
         "H            Toggle sector colors", "6            Light editor"
     };
@@ -906,7 +915,7 @@ static void history_apply(EditorSnapshot *s,Level *l,EditorViewport *ed) {
     ed->wall_start_vertex=-1;
     memset(s,0,sizeof(*s));
 }
-static void editor_history_reset(void) {
+void editor_viewport_clear_history(void) {
     history_clear(undo_stack,&undo_count);
     history_clear(redo_stack,&redo_count);
     snapshot_dispose(&drag_start);
@@ -1022,7 +1031,7 @@ static void editor_process_event_impl(
         }
 
         if (event->button.button == SDL_BUTTON_RIGHT &&
-            editor->active_tool == EDITOR_TOOL_ROOM) {editor->room_dragging=false;return;}
+            (editor->active_tool == EDITOR_TOOL_ROOM || editor->active_tool == EDITOR_TOOL_CORRIDOR)) {editor->room_dragging=false;return;}
 
         if (event->button.button == SDL_BUTTON_RIGHT &&
             editor->active_tool == EDITOR_TOOL_WALL) {
@@ -1067,7 +1076,7 @@ static void editor_process_event_impl(
                 editor->selected_light=i;
                 return;
             }
-            if (editor->active_tool == EDITOR_TOOL_ROOM) {
+            if (editor->active_tool == EDITOR_TOOL_ROOM || editor->active_tool == EDITOR_TOOL_CORRIDOR) {
                 screen_to_world(editor,width,height,event->button.x,event->button.y,
                     &editor->room_start_x,&editor->room_start_z);
                 if (editor->snap_enabled) {
@@ -1226,7 +1235,7 @@ static void editor_process_event_impl(
         }
 
         if (event->button.button == SDL_BUTTON_LEFT) {
-            if (editor->active_tool==EDITOR_TOOL_ROOM && editor->room_dragging) {
+            if ((editor->active_tool==EDITOR_TOOL_ROOM || editor->active_tool==EDITOR_TOOL_CORRIDOR) && editor->room_dragging) {
                 screen_to_world(editor,width,height,event->button.x,event->button.y,
                     &editor->room_end_x,&editor->room_end_z);
                 if (editor->snap_enabled) {
@@ -1234,6 +1243,20 @@ static void editor_process_event_impl(
                     editor->room_end_z=editor_snap_value(editor->room_end_z,editor->grid_size);
                 }
                 editor->room_dragging=false;
+                if (editor->active_tool == EDITOR_TOOL_CORRIDOR) {
+                    float dx=editor->room_end_x-editor->room_start_x;
+                    float dz=editor->room_end_z-editor->room_start_z;
+                    const float half_width=1.0f;
+                    if (fabsf(dx)>=fabsf(dz)) {
+                        float z=(editor->room_start_z+editor->room_end_z)*0.5f;
+                        editor->room_start_z=z-half_width;
+                        editor->room_end_z=z+half_width;
+                    } else {
+                        float x=(editor->room_start_x+editor->room_end_x)*0.5f;
+                        editor->room_start_x=x-half_width;
+                        editor->room_end_x=x+half_width;
+                    }
+                }
                 editor->room_failed=!room_make_rectangle(level,editor->room_start_x,editor->room_start_z,
                     editor->room_end_x,editor->room_end_z);
                 if (editor->room_failed)
@@ -1373,6 +1396,7 @@ static void editor_process_event_impl(
             case SDL_SCANCODE_4: editor_set_tool(editor, EDITOR_TOOL_SECTOR); return;
             case SDL_SCANCODE_5: editor_set_tool(editor, EDITOR_TOOL_ROOM); return;
             case SDL_SCANCODE_6: editor_set_tool(editor, EDITOR_TOOL_LIGHT); return;
+            case SDL_SCANCODE_7: editor_set_tool(editor, EDITOR_TOOL_CORRIDOR); return;
             case SDL_SCANCODE_H: editor->show_sector_fill=!editor->show_sector_fill;return;
             case SDL_SCANCODE_ESCAPE:
                 if (editor->active_tool == EDITOR_TOOL_WALL &&
@@ -1487,7 +1511,7 @@ void editor_viewport_process_event(EditorViewport *ed,SDL_Renderer *renderer,
             event->button.button==SDL_BUTTON_LEFT;
     bool key=event->type==SDL_EVENT_KEY_DOWN && !event->key.repeat;
     EditorSnapshot before;
-    bool captured=(down || (up && ed->active_tool==EDITOR_TOOL_ROOM && ed->room_dragging) ||
+    bool captured=(down || (up && (ed->active_tool==EDITOR_TOOL_ROOM || ed->active_tool==EDITOR_TOOL_CORRIDOR) && ed->room_dragging) ||
                    (key && event->key.scancode!=SDL_SCANCODE_R)) &&
                   snapshot_take(&before,l,ed);
     if(key && ed->active_tool==EDITOR_TOOL_LIGHT && ed->selected_light>=0 &&
@@ -1622,9 +1646,18 @@ static void editor_draw_sector_fills(SDL_Renderer *r,const EditorViewport *ed,
 }
 static void editor_draw_room_preview(SDL_Renderer *r,const EditorViewport *ed,int width,int height) {
     if (!ed->room_dragging) return;
+    float x1=ed->room_start_x,z1=ed->room_start_z;
+    float x2=ed->room_end_x,z2=ed->room_end_z;
+    if (ed->active_tool==EDITOR_TOOL_CORRIDOR) {
+        if (fabsf(x2-x1)>=fabsf(z2-z1)) {
+            float mid=(z1+z2)*0.5f;z1=mid-1.0f;z2=mid+1.0f;
+        } else {
+            float mid=(x1+x2)*0.5f;x1=mid-1.0f;x2=mid+1.0f;
+        }
+    }
     float ax,ay,bx,by;
-    world_to_screen(ed,ed->room_start_x,ed->room_start_z,width,height,&ax,&ay);
-    world_to_screen(ed,ed->room_end_x,ed->room_end_z,width,height,&bx,&by);
+    world_to_screen(ed,x1,z1,width,height,&ax,&ay);
+    world_to_screen(ed,x2,z2,width,height,&bx,&by);
     SDL_FRect rect={fminf(ax,bx),fminf(ay,by),fabsf(bx-ax),fabsf(by-ay)};
     SDL_SetRenderDrawBlendMode(r,SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(r,65,195,235,60);SDL_RenderFillRect(r,&rect);
@@ -1780,7 +1813,8 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
     SDL_RenderDebugText(renderer, x + pad, y + 12.0f, "LEVEL EDITOR");
     const char *tool_name = editor->active_tool == EDITOR_TOOL_VERTEX ? "VERTEX" :
         editor->active_tool == EDITOR_TOOL_WALL ? "WALL" :
-        editor->active_tool == EDITOR_TOOL_SECTOR ? "SECTOR" : editor->active_tool == EDITOR_TOOL_ROOM ? "DRAW ROOM" : "SELECT";
+        editor->active_tool == EDITOR_TOOL_SECTOR ? "SECTOR" : editor->active_tool == EDITOR_TOOL_ROOM ? "DRAW ROOM" :
+        editor->active_tool == EDITOR_TOOL_CORRIDOR ? "CORRIDOR" : editor->active_tool == EDITOR_TOOL_LIGHT ? "LIGHT" : "SELECT";
     char line[96];
     snprintf(line, sizeof(line), "ACTIVE TOOL: %s", tool_name);
     SDL_RenderDebugText(renderer, x + pad, y + 29.0f, line);
@@ -1791,6 +1825,7 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
             (editor->wall_start_vertex >= 0 ? "Choose the ending vertex" : "Choose the starting vertex") :
         editor->active_tool == EDITOR_TOOL_SECTOR ? "Click room to select; edit heights" :
         editor->active_tool == EDITOR_TOOL_ROOM ? "Drag to create a closed room" :
+        editor->active_tool == EDITOR_TOOL_CORRIDOR ? "Drag corridor axis (2-unit width)" :
         "Select and move geometry";
     SDL_RenderDebugText(renderer, x + pad, y + 46.0f, hint);
 
@@ -1835,7 +1870,8 @@ static void editor_draw_controls(SDL_Renderer *renderer, const EditorViewport *e
     SDL_SetRenderDrawColor(renderer, 220, 225, 235, 255);
     const char *general[] = {
         "Middle Drag  Pan view", "Wheel        Zoom",
-        "G            Toggle grid snap", "Ctrl+S       Save",
+        "G            Toggle grid snap", "Ctrl+O       Open level",
+        "Ctrl+S       Save", "Ctrl+Shift+S  Save As",
         "Esc          Exit editor", "Ctrl+Z / Y   Undo / Redo",
         "H            Toggle sector colors", "6            Light editor"
     };
@@ -2052,4 +2088,21 @@ void editor_viewport_render(
     editor_draw_save_notification(renderer, editor);
 
     SDL_RenderPresent(renderer);
+}
+void editor_viewport_zoom_to_fit(EditorViewport *v, const Level *l) {
+    if (!v || !l || l->vertex_count<=0) return;
+    float minx=l->vertices[0].x, maxx=minx, minz=l->vertices[0].z, maxz=minz;
+    for (int i=1;i<l->vertex_count;i++) {
+        float x=l->vertices[i].x,z=l->vertices[i].z;
+        if (x<minx) minx=x;
+        if (x>maxx) maxx=x;
+        if (z<minz) minz=z;
+        if (z>maxz) maxz=z;
+    }
+    v->camera_x=(minx+maxx)*0.5f; v->camera_z=(minz+maxz)*0.5f;
+    float spanx=maxx-minx+8.0f, spanz=maxz-minz+8.0f;
+    float zoomx=1250.0f/spanx, zoomz=750.0f/spanz;
+    v->zoom=fminf(zoomx,zoomz);
+    if (v->zoom<2.0f) v->zoom=2.0f;
+    if (v->zoom>80.0f) v->zoom=80.0f;
 }

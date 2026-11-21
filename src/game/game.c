@@ -51,7 +51,7 @@ static int game_find_spawn_sector(const Level *level, float x, float z) {
 }
 
 // Start new game instance
-bool game_new(struct Game **game, const char *renderer_mode) {
+bool game_new(struct Game **game, const char *renderer_mode, const char *level_override) {
     *game = calloc(1, sizeof(struct Game));
     if (*game == NULL) {
         fprintf(stderr, "Error Calloc of New Game.\n");
@@ -71,8 +71,13 @@ bool game_new(struct Game **game, const char *renderer_mode) {
 
     /* Start with the lighting showcase when available; preserve the old test
        level as a fallback for existing installations. */
-    const char *level_path = "levels/blacksite_12_world_lighting.json";
-    if (!level_load_json(&g->level, level_path)) {
+    const char *level_path = level_override ? level_override : "levels/blacksite_12_thick_walls.json";
+    if (level_override && !level_load_json(&g->level, level_path)) {
+        SDL_Log("ERROR: Failed to load requested level: %s", level_path);
+        game_free(game);
+        return false;
+    }
+    if (!level_override && !level_load_json(&g->level, level_path)) {
         level_path = "levels/test_level.json";
         if (!level_load_json(&g->level, level_path)) {
             SDL_Log("ERROR: Failed to load either startup level.");
